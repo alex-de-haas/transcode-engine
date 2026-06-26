@@ -245,6 +245,14 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
             // The Process is disposed as the using scope exits; drop the reference so a later cancel/shutdown
             // kill is a no-op instead of touching a disposed object.
             job.DetachProcess();
+
+            // A cancelled or failed encode leaves a useless, partial output file. Clean it up so it doesn't
+            // linger on the catalog (wasting space and confusing a later re-convert). A completed job's
+            // output is the good result and is kept.
+            if (job.State is JobState.Cancelled or JobState.Failed)
+            {
+                TryDeleteOutput(job.Request.OutputPath);
+            }
         }
     }
 
