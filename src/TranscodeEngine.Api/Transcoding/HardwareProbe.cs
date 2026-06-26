@@ -51,8 +51,9 @@ public static class HardwareProbe
             var system32 = Environment.GetFolderPath(Environment.SpecialFolder.System);
             return system32.Length > 0 && File.Exists(Path.Combine(system32, "amfrt64.dll"));
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        catch (Exception)
         {
+            // Best-effort diagnostic: never let a probe failure crash startup or a request — report "no AMF".
             return false;
         }
     }

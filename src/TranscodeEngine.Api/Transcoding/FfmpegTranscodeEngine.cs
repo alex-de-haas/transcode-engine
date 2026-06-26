@@ -273,11 +273,14 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         }
         else if (hardware == TranscodeHardware.Amf)
         {
-            // Hardware-decode on the AMD VCN (D3D11VA) so both heavy stages run on the GPU. Frames are
-            // downloaded to system memory between decode and the AMF encoder (no fragile full-GPU surface
-            // hand-off), which keeps arbitrary inputs working.
+            // Hardware-decode on the AMD VCN (D3D11VA), then hand the AMF encoder system-memory frames. The
+            // explicit nv12 output format forces ffmpeg to download the decoded surfaces off the GPU —
+            // without it the decoder keeps d3d11 surfaces that the *_amf encoders reject (format mismatch).
+            // The system-memory hand-off (no fragile full-GPU surface chain) also keeps arbitrary inputs working.
             args.Add("-hwaccel");
             args.Add("d3d11va");
+            args.Add("-hwaccel_output_format");
+            args.Add("nv12");
         }
 
         args.Add("-i");
@@ -327,6 +330,9 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
     internal TranscodeHardware ResolveHardware(TranscodeHardware requested)
     {
         var effective = requested == TranscodeHardware.Auto ? _settings.DefaultHardware : requested;
+        // Probe the host once: Detect touches the filesystem (/dev/dri enumeration + AMF runtime check), and
+        // both auto-detection and the post-resolution fallback checks below need a consistent view of it.
+        var probe = HardwareProbe.Detect(_settings);
         if (effective is TranscodeHardware.Auto)
         {
             // The .NET process only reports its real OS when running natively (the docker runtime is Linux),
@@ -336,17 +342,17 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
             {
                 effective = TranscodeHardware.VideoToolbox;
             }
-            else if (OperatingSystem.IsWindows() && HardwareProbe.Detect(_settings).AmfAvailable)
+            else if (OperatingSystem.IsWindows() && probe.AmfAvailable)
             {
                 effective = TranscodeHardware.Amf;
             }
             else
             {
-                effective = HardwareProbe.Detect(_settings).VaapiAvailable ? TranscodeHardware.Vaapi : TranscodeHardware.None;
+                effective = probe.VaapiAvailable ? TranscodeHardware.Vaapi : TranscodeHardware.None;
             }
         }
 
-        if (effective == TranscodeHardware.Vaapi && !HardwareProbe.Detect(_settings).VaapiAvailable)
+        if (effective == TranscodeHardware.Vaapi && !probe.VaapiAvailable)
         {
             _logger.LogWarning("VAAPI requested but no render device is available; falling back to software.");
             return TranscodeHardware.None;
@@ -358,7 +364,7 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
             return TranscodeHardware.None;
         }
 
-        if (effective == TranscodeHardware.Amf && !HardwareProbe.Detect(_settings).AmfAvailable)
+        if (effective == TranscodeHardware.Amf && !probe.AmfAvailable)
         {
             _logger.LogWarning("AMF requested but the AMD AMF runtime is not available (native Windows + AMD driver required); falling back to software.");
             return TranscodeHardware.None;
