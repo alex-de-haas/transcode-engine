@@ -2,10 +2,11 @@
   "schemaVersion": "app.0.1",
   "id": "com.haas.transcode-engine",
   "name": "Transcode Engine",
-  "description": "ffmpeg-backed batch transcoder with VAAPI hardware acceleration and an HTTP/SSE control API, for other Hosty apps to drive re-encoding jobs over a dependency.",
+  "description": "ffmpeg-backed batch transcoder with VAAPI/VideoToolbox hardware acceleration and an HTTP/SSE control API, for other Hosty apps to drive re-encoding jobs over a dependency.",
   "version": "0.1.0",
   "runtimeProfiles": [
-    { "key": "docker", "type": "docker", "default": true }
+    { "key": "docker", "type": "docker", "default": true },
+    { "key": "local", "type": "localCommand" }
   ],
   "defaultRuntime": "docker",
   "services": [
@@ -19,6 +20,14 @@
           "ports": [
             { "key": "control", "containerPort": 8080, "protocol": "http" }
           ]
+        },
+        "local": {
+          "type": "localCommand",
+          "workingDirectory": ".",
+          "command": "dotnet run --project src/TranscodeEngine.Api --configuration Release",
+          "ports": [
+            { "key": "control", "containerPort": 8080, "protocol": "http" }
+          ]
         }
       }
     }
@@ -29,7 +38,8 @@
   "data": {
     "enabled": true,
     "targets": [
-      { "runtime": "docker", "service": "engine", "containerPath": "/app/data", "environment": "HOSTY_APP_DATA_DIR" }
+      { "runtime": "docker", "service": "engine", "containerPath": "/app/data", "environment": "HOSTY_APP_DATA_DIR" },
+      { "runtime": "local", "environment": "HOSTY_APP_DATA_DIR" }
     ]
   },
   "externalMounts": {

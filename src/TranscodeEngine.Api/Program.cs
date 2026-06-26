@@ -1,14 +1,24 @@
 // Transcode Engine control API.
 //
 // An ffmpeg-backed batch transcoder exposed over an HTTP/SSE control API for other Hosty apps to drive
-// re-encoding jobs over a dependency. Hardware acceleration (VAAPI) runs in this container via a
-// passed-through /dev/dri device (granted by the Hosty manifest's `devices`). See README.
+// re-encoding jobs over a dependency. Hardware acceleration: VAAPI in the docker runtime via a passed-through
+// /dev/dri device (granted by the Hosty manifest's `devices`); VideoToolbox when run natively on macOS via
+// the localCommand runtime. See README.
 
 using TranscodeEngine.Api.Api;
 using TranscodeEngine.Api.Realtime;
 using TranscodeEngine.Api.Transcoding;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Under the localCommand runtime (e.g. running natively on macOS for VideoToolbox) Core assigns a loopback
+// port and injects it; bind that. The docker image sets ASPNETCORE_URLS instead, so this is skipped there.
+if (string.IsNullOrWhiteSpace(builder.Configuration["ASPNETCORE_URLS"]) &&
+    (builder.Configuration["HOSTY_PORT_CONTROL"] ?? builder.Configuration["PORT"]) is { Length: > 0 } assignedPort &&
+    int.TryParse(assignedPort, out var controlPort))
+{
+    builder.WebHost.UseUrls($"http://127.0.0.1:{controlPort}");
+}
 
 builder.Services.AddSingleton(TranscodeEngineSettings.FromConfiguration(builder.Configuration, builder.Environment.ContentRootPath));
 

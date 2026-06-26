@@ -7,12 +7,13 @@ public enum TranscodeVideoCodec
     Hevc,
 }
 
-/// <summary>Which encoder family a job runs on. <see cref="Auto"/> picks VAAPI when a render device is
-/// present and falls back to software otherwise.</summary>
+/// <summary>Which encoder family a job runs on. <see cref="Auto"/> picks VideoToolbox on a native macOS
+/// host, VAAPI when a Linux render device is present, and falls back to software otherwise.</summary>
 public enum TranscodeHardware
 {
     Auto,
     Vaapi,
+    VideoToolbox,
     None,
 }
 

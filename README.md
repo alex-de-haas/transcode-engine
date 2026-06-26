@@ -20,15 +20,16 @@ cross-app dependency.
 ## Status
 
 Implemented:
-- **App manifest** (`manifest.json`) — docker service with a `/dev/dri` device passthrough (requires
-  docker-host capabilities/devices support), a shared `media` mount, and the control port.
+- **App manifest** (`manifest.json`) — a `docker` service with a `/dev/dri` device passthrough (requires
+  docker-host capabilities/devices support) plus a `local` (native) runtime profile for host-native encoders
+  (macOS VideoToolbox), a shared `media` mount, and the control port.
 - **Container** (`Dockerfile` + `docker/entrypoint.sh`) — ffmpeg + the VA-API userspace stack
   (`mesa-va-drivers` covers Intel iHD/i965 and AMD radeonsi). The entrypoint logs the visible `/dev/dri`
   devices and a best-effort `vainfo` so a misconfigured passthrough is obvious in the logs; it never fails
   the start (with no device, software encoding still works).
 - **ffmpeg engine** (`src/TranscodeEngine.Api/Transcoding`) — a bounded set of worker loops drain a job
-  queue, spawn ffmpeg per job (VAAPI software-decode → `hwupload` → hardware-encode, or libx264/libx265),
-  and parse ffmpeg's `-progress` stream into live snapshots.
+  queue, spawn ffmpeg per job (VAAPI software-decode → `hwupload` → hardware-encode; VideoToolbox on native
+  macOS; or libx264/libx265), and parse ffmpeg's `-progress` stream into live snapshots.
 - **Control API + SSE** (`src/TranscodeEngine.Api/Api`, `.../Realtime`) — create/list/inspect/cancel/remove
   jobs, and `GET /events` streaming progress + started/completed/errored transitions.
 - **Multiple media mounts** — one labelled host path per catalog filesystem, selected per job by
@@ -50,7 +51,7 @@ GET    /jobs/{jobId}
 POST   /jobs/{jobId}/cancel
 DELETE /jobs/{jobId}?deleteOutput=
 GET    /events            (SSE: progress, started, completed, errored)
-GET    /hardware          { vaapiAvailable, vaapiDevice, renderDevices, checkedAt }
+GET    /hardware          { vaapiAvailable, vaapiDevice, renderDevices, videoToolboxAvailable, checkedAt }
 GET    /healthz
 ```
 
@@ -63,12 +64,37 @@ a missing input, or a path that escapes the root is a `400` so a job is never re
 `outputMountLabel` defaults to `inputMountLabel`.
 
 - `videoCodec` — `h264` or `hevc` (default `hevc`).
-- `hardwareAcceleration` — `auto` (VAAPI when a render device is present, else software), `vaapi`, or `none`
-  (default `auto`).
-- `crf` — software-encoder quality (0–51); ignored by VAAPI.
+- `hardwareAcceleration` — `auto` (VideoToolbox on a native macOS host, VAAPI when a Linux render device is
+  present, else software), `vaapi`, `videotoolbox`, or `none` (default `auto`). A choice the host can't
+  satisfy falls back to software.
+- `crf` — software-encoder quality (0–51); ignored by the hardware encoders.
 
 `GET /hardware` reports whether a VAAPI render node is visible inside the container (i.e. the `/dev/dri`
-passthrough worked) and which render devices were found.
+passthrough worked), which render devices were found, and whether VideoToolbox is reachable (only when the
+engine runs natively on macOS — see [Hardware acceleration](#hardware-acceleration)).
+
+## Hardware acceleration
+
+| Encoder | Runtime | How |
+| --- | --- | --- |
+| **VAAPI** (Intel / AMD) | `docker` | A passed-through `/dev/dri` render node (manifest `devices`). The default production target. |
+| **VideoToolbox** (Apple) | `local` (native) | The engine runs natively on the macOS host via the `localCommand` runtime; the host's `ffmpeg` reaches VideoToolbox directly. |
+| **Software** (libx264 / libx265) | any | Fallback when no hardware is available. |
+
+**Why VideoToolbox needs the native runtime.** Docker on macOS runs containers in a Linux VM with no access
+to Apple frameworks or the GPU, so VideoToolbox (and any hardware encode) is unreachable from the `docker`
+runtime on a Mac. To use it, run the engine through the **`local`** runtime profile, which executes
+`dotnet run` on the host so `ffmpeg` is the host's own (e.g. Homebrew `ffmpeg`, which ships VideoToolbox):
+
+```bash
+brew install ffmpeg dotnet            # host needs ffmpeg (with VideoToolbox) + the .NET SDK
+hosty apps install . --runtime local
+hosty apps start com.haas.transcode-engine
+```
+
+`HWACCEL=auto` then picks VideoToolbox automatically on macOS; set `HWACCEL=videotoolbox` to force it. The
+same `local` runtime is how you'd reach any other host-native encoder (e.g. NVENC) without docker device
+plumbing.
 
 ## Consumer integration
 

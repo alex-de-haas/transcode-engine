@@ -59,6 +59,7 @@ public sealed class TranscodeEngineSettings
     {
         "auto" => TranscodeHardware.Auto,
         "vaapi" => TranscodeHardware.Vaapi,
+        "videotoolbox" or "vt" or "macos" => TranscodeHardware.VideoToolbox,
         "none" or "software" or "cpu" => TranscodeHardware.None,
         _ => null,
     };

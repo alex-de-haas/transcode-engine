@@ -215,8 +215,8 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
     }
 
     /// <summary>Builds the ffmpeg argument list. VAAPI uses the proven software-decode → <c>hwupload</c> →
-    /// hardware-encode chain (most compatible across arbitrary inputs); software uses libx264/libx265 with an
-    /// optional CRF.</summary>
+    /// hardware-encode chain (most compatible across arbitrary inputs); VideoToolbox (native macOS) maps
+    /// straight to the platform encoder; software uses libx264/libx265 with an optional CRF.</summary>
     internal List<string> BuildArguments(TranscodeJob job, TranscodeHardware hardware)
     {
         var request = job.Request;
@@ -231,22 +231,28 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         args.Add("-i");
         args.Add(request.InputPath);
 
-        if (hardware == TranscodeHardware.Vaapi)
+        switch (hardware)
         {
-            args.Add("-vf");
-            args.Add("format=nv12,hwupload");
-            args.Add("-c:v");
-            args.Add(VaapiEncoder(request.VideoCodec));
-        }
-        else
-        {
-            args.Add("-c:v");
-            args.Add(SoftwareEncoder(request.VideoCodec));
-            if (request.Crf is { } crf)
-            {
-                args.Add("-crf");
-                args.Add(crf.ToString(CultureInfo.InvariantCulture));
-            }
+            case TranscodeHardware.Vaapi:
+                args.Add("-vf");
+                args.Add("format=nv12,hwupload");
+                args.Add("-c:v");
+                args.Add(VaapiEncoder(request.VideoCodec));
+                break;
+            case TranscodeHardware.VideoToolbox:
+                args.Add("-c:v");
+                args.Add(VideoToolboxEncoder(request.VideoCodec));
+                break;
+            default:
+                args.Add("-c:v");
+                args.Add(SoftwareEncoder(request.VideoCodec));
+                if (request.Crf is { } crf)
+                {
+                    args.Add("-crf");
+                    args.Add(crf.ToString(CultureInfo.InvariantCulture));
+                }
+
+                break;
         }
 
         args.Add("-c:a");
@@ -258,19 +264,30 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         return args;
     }
 
-    /// <summary>Resolves <see cref="TranscodeHardware.Auto"/> to VAAPI when a render device is present,
-    /// otherwise software.</summary>
+    /// <summary>Resolves <see cref="TranscodeHardware.Auto"/> to VideoToolbox on a native macOS host, to
+    /// VAAPI when a Linux render device is present, otherwise software. An explicit hardware choice the host
+    /// cannot satisfy falls back to software with a warning rather than failing the job.</summary>
     internal TranscodeHardware ResolveHardware(TranscodeHardware requested)
     {
         var effective = requested == TranscodeHardware.Auto ? _settings.DefaultHardware : requested;
         if (effective is TranscodeHardware.Auto)
         {
-            effective = HardwareProbe.Detect(_settings).VaapiAvailable ? TranscodeHardware.Vaapi : TranscodeHardware.None;
+            // The .NET process only reports macOS when running natively on the host (the docker runtime is
+            // Linux), which is exactly where VideoToolbox is reachable.
+            effective = OperatingSystem.IsMacOS()
+                ? TranscodeHardware.VideoToolbox
+                : HardwareProbe.Detect(_settings).VaapiAvailable ? TranscodeHardware.Vaapi : TranscodeHardware.None;
         }
 
         if (effective == TranscodeHardware.Vaapi && !HardwareProbe.Detect(_settings).VaapiAvailable)
         {
             _logger.LogWarning("VAAPI requested but no render device is available; falling back to software.");
+            return TranscodeHardware.None;
+        }
+
+        if (effective == TranscodeHardware.VideoToolbox && !OperatingSystem.IsMacOS())
+        {
+            _logger.LogWarning("VideoToolbox requested but the engine is not running natively on macOS; falling back to software.");
             return TranscodeHardware.None;
         }
 
@@ -281,6 +298,13 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
     {
         TranscodeVideoCodec.H264 => "h264_vaapi",
         TranscodeVideoCodec.Hevc => "hevc_vaapi",
+        _ => throw new ArgumentOutOfRangeException(nameof(codec)),
+    };
+
+    private static string VideoToolboxEncoder(TranscodeVideoCodec codec) => codec switch
+    {
+        TranscodeVideoCodec.H264 => "h264_videotoolbox",
+        TranscodeVideoCodec.Hevc => "hevc_videotoolbox",
         _ => throw new ArgumentOutOfRangeException(nameof(codec)),
     };
 

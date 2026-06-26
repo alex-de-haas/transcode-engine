@@ -6,10 +6,13 @@ namespace TranscodeEngine.Api.Transcoding;
 /// passthrough worked and the host exposes a render device).</param>
 /// <param name="VaapiDevice">The configured render node, when present.</param>
 /// <param name="RenderDevices">All <c>/dev/dri/renderD*</c> nodes visible inside the container.</param>
+/// <param name="VideoToolboxAvailable">Whether VideoToolbox is reachable — true only when the engine runs
+/// natively on macOS (never inside the Linux docker container).</param>
 public sealed record HardwareStatus(
     bool VaapiAvailable,
     string? VaapiDevice,
     IReadOnlyList<string> RenderDevices,
+    bool VideoToolboxAvailable,
     DateTimeOffset CheckedAt);
 
 /// <summary>Inspects the passed-through DRI devices to report VAAPI availability without spawning a process.</summary>
@@ -24,6 +27,7 @@ public static class HardwareProbe
             available,
             available ? (File.Exists(configured) ? configured : renderDevices[0]) : null,
             renderDevices,
+            OperatingSystem.IsMacOS(),
             DateTimeOffset.UtcNow);
     }
 
