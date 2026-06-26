@@ -34,10 +34,14 @@ public sealed record JobDescriptor(
     double? DurationSeconds,
     long? InputSizeBytes);
 
-/// <summary>A live, in-memory progress snapshot (never persisted).</summary>
+/// <summary>A live, in-memory progress snapshot (never persisted). <see cref="EffectiveHardware"/> is the
+/// encoder family actually selected after auto-detect/fallback (<c>vaapi</c> / <c>videotoolbox</c> /
+/// <c>software</c>; <c>null</c> while queued), so a consumer can tell whether hardware encoding is in
+/// effect.</summary>
 public sealed record JobSnapshot(
     string JobId,
     string? Name,
+    string? EffectiveHardware,
     string State,
     bool Complete,
     double PercentComplete,

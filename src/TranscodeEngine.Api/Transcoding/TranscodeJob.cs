@@ -155,9 +155,20 @@ internal sealed class TranscodeJob
                 eta = Math.Max(0, Math.Round((total - _outTimeSeconds) / _speed, 1));
             }
 
+            // The effective encoder family is only known once the worker has resolved it (after Start);
+            // a still-queued job reports null.
+            var effectiveHardware = _hardware switch
+            {
+                TranscodeHardware.Vaapi => "vaapi",
+                TranscodeHardware.VideoToolbox => "videotoolbox",
+                TranscodeHardware.None => "software",
+                _ => null,
+            };
+
             return new JobSnapshot(
                 JobId,
                 Path.GetFileName(Request.OutputPath),
+                effectiveHardware,
                 _state.ToString(),
                 complete,
                 percent,

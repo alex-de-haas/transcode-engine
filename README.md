@@ -69,6 +69,12 @@ a missing input, or a path that escapes the root is a `400` so a job is never re
   satisfy falls back to software.
 - `crf` — software-encoder quality (0–51); ignored by the hardware encoders.
 
+Each job snapshot (`GET /jobs`, `GET /jobs/{id}`, and the SSE `progress` events) carries `effectiveHardware`
+— the encoder family actually selected after auto-detection/fallback (`vaapi` / `videotoolbox` / `software`),
+so you can confirm hardware encoding is in effect. The engine also logs it per job, e.g.
+`Job …: encoding with hevc_vaapi (vaapi)`. A `*_vaapi` / `*_videotoolbox` job that completes definitely used
+hardware — ffmpeg errors out if it cannot initialise the device rather than silently dropping to software.
+
 `GET /hardware` reports whether a VAAPI render node is visible inside the container (i.e. the `/dev/dri`
 passthrough worked), which render devices were found, and whether VideoToolbox is reachable (only when the
 engine runs natively on macOS — see [Hardware acceleration](#hardware-acceleration)).

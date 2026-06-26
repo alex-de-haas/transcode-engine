@@ -160,6 +160,13 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         job.Start(hardware);
         JobStarted?.Invoke(this, job.JobId);
 
+        // Make the actually-selected encoder visible: a *_vaapi / *_videotoolbox encoder that then completes
+        // means hardware encoding really happened (ffmpeg errors out if it can't init the device — it never
+        // silently falls back to software mid-run).
+        _logger.LogInformation(
+            "Job {JobId}: encoding with {Encoder} ({Acceleration}).",
+            job.JobId, EncoderName(job.Request.VideoCodec, hardware), HardwareLabel(hardware));
+
         var psi = new ProcessStartInfo(_settings.FfmpegPath)
         {
             RedirectStandardOutput = true,
@@ -340,6 +347,20 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         TranscodeVideoCodec.H264 => "libx264",
         TranscodeVideoCodec.Hevc => "libx265",
         _ => throw new ArgumentOutOfRangeException(nameof(codec)),
+    };
+
+    private static string EncoderName(TranscodeVideoCodec codec, TranscodeHardware hardware) => hardware switch
+    {
+        TranscodeHardware.Vaapi => VaapiEncoder(codec),
+        TranscodeHardware.VideoToolbox => VideoToolboxEncoder(codec),
+        _ => SoftwareEncoder(codec),
+    };
+
+    private static string HardwareLabel(TranscodeHardware hardware) => hardware switch
+    {
+        TranscodeHardware.Vaapi => "vaapi",
+        TranscodeHardware.VideoToolbox => "videotoolbox",
+        _ => "software",
     };
 
     private async Task<double?> ProbeDurationAsync(string inputPath, CancellationToken cancellationToken)
