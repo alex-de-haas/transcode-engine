@@ -57,6 +57,7 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
 
         foreach (var job in _jobs.Values)
         {
+            job.CancelRequested = true;
             TryKill(job);
         }
 
@@ -148,6 +149,13 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
 
     private async Task RunJobAsync(TranscodeJob job, CancellationToken cancellationToken)
     {
+        // The job can be cancelled between being dequeued and reaching here; don't spawn ffmpeg for it.
+        if (job.CancelRequested)
+        {
+            job.Complete(JobState.Cancelled);
+            return;
+        }
+
         var hardware = ResolveHardware(job.Request.HardwareAcceleration);
         job.Start(hardware);
         JobStarted?.Invoke(this, job.JobId);
@@ -181,8 +189,25 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
             process.BeginErrorReadLine();
             process.BeginOutputReadLine();
 
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            await process.WaitForExitAsync(linked.Token);
+            // A cancel that arrived during start (before the process was attached) would have been a no-op;
+            // now that the process is attached, honour it.
+            if (job.CancelRequested)
+            {
+                TryKill(job);
+            }
+
+            try
+            {
+                await process.WaitForExitAsync(cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                // Shutdown: the worker token fired. Make sure ffmpeg can't outlive the engine, then stop
+                // gracefully — a normal shutdown is not a job failure.
+                TryKill(job);
+                job.Complete(JobState.Cancelled);
+                return;
+            }
 
             if (job.CancelRequested)
             {
@@ -202,15 +227,17 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
                 _logger.LogWarning("Job {JobId} failed (ffmpeg exit {Code}). {Tail}", job.JobId, process.ExitCode, stderrTail.Text);
             }
         }
-        catch (OperationCanceledException) when (job.CancelRequested)
-        {
-            job.Complete(JobState.Cancelled);
-        }
         catch (Exception exception)
         {
             job.Fail();
             JobFailed?.Invoke(this, job.JobId);
             _logger.LogError(exception, "Job {JobId} errored. {Tail}", job.JobId, stderrTail.Text);
+        }
+        finally
+        {
+            // The Process is disposed as the using scope exits; drop the reference so a later cancel/shutdown
+            // kill is a no-op instead of touching a disposed object.
+            job.DetachProcess();
         }
     }
 
@@ -342,9 +369,18 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
                 return null;
             }
 
-            var stdout = await process.StandardOutput.ReadToEndAsync(cancellationToken);
-            await process.WaitForExitAsync(cancellationToken);
-            return double.TryParse(stdout.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds) ? seconds : null;
+            try
+            {
+                var stdout = await process.StandardOutput.ReadToEndAsync(cancellationToken);
+                await process.WaitForExitAsync(cancellationToken);
+                return double.TryParse(stdout.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds) ? seconds : null;
+            }
+            catch (OperationCanceledException)
+            {
+                // Don't leave ffprobe running when the create request is cancelled.
+                TryKillProcess(process);
+                throw;
+            }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -365,19 +401,20 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         }
     }
 
-    private void TryKill(TranscodeJob job)
+    private void TryKill(TranscodeJob job) => TryKillProcess(job.Process);
+
+    private static void TryKillProcess(Process? process)
     {
         try
         {
-            var process = job.Process;
             if (process is { HasExited: false })
             {
                 process.Kill(entireProcessTree: true);
             }
         }
-        catch (Exception exception) when (exception is InvalidOperationException or NotSupportedException)
+        catch (Exception exception) when (exception is InvalidOperationException or NotSupportedException or ObjectDisposedException)
         {
-            // Process already gone.
+            // Process already gone or disposed.
         }
     }
 

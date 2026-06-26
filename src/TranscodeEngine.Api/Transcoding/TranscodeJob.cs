@@ -63,6 +63,10 @@ internal sealed class TranscodeJob
 
     public void AttachProcess(Process process) => Process = process;
 
+    /// <summary>Clears the process reference once it has exited and been disposed, so a later
+    /// cancel/shutdown kill never touches a disposed <see cref="Process"/>.</summary>
+    public void DetachProcess() => Process = null;
+
     public void Complete(JobState state)
     {
         lock (_gate)
