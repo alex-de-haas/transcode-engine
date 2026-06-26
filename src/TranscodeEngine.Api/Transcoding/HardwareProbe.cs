@@ -8,11 +8,15 @@ namespace TranscodeEngine.Api.Transcoding;
 /// <param name="RenderDevices">All <c>/dev/dri/renderD*</c> nodes visible inside the container.</param>
 /// <param name="VideoToolboxAvailable">Whether VideoToolbox is reachable — true only when the engine runs
 /// natively on macOS (never inside the Linux docker container).</param>
+/// <param name="AmfAvailable">Whether the AMD AMF runtime is reachable — true only when the engine runs
+/// natively on Windows and the AMD driver's <c>amfrt64.dll</c> is present (never inside the Linux docker
+/// container).</param>
 public sealed record HardwareStatus(
     bool VaapiAvailable,
     string? VaapiDevice,
     IReadOnlyList<string> RenderDevices,
     bool VideoToolboxAvailable,
+    bool AmfAvailable,
     DateTimeOffset CheckedAt);
 
 /// <summary>Inspects the passed-through DRI devices to report VAAPI availability without spawning a process.</summary>
@@ -28,7 +32,30 @@ public static class HardwareProbe
             available ? (File.Exists(configured) ? configured : renderDevices[0]) : null,
             renderDevices,
             OperatingSystem.IsMacOS(),
+            AmfRuntimeAvailable(),
             DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>True when the AMD AMF runtime (<c>amfrt64.dll</c>, shipped by the Adrenalin driver) is present
+    /// on a native Windows host — the signal that the <c>*_amf</c> encoders can initialise. The docker runtime
+    /// is Linux, so this is always false there.</summary>
+    private static bool AmfRuntimeAvailable()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return false;
+        }
+
+        try
+        {
+            var system32 = Environment.GetFolderPath(Environment.SpecialFolder.System);
+            return system32.Length > 0 && File.Exists(Path.Combine(system32, "amfrt64.dll"));
+        }
+        catch (Exception)
+        {
+            // Best-effort diagnostic: never let a probe failure crash startup or a request — report "no AMF".
+            return false;
+        }
     }
 
     private static IReadOnlyList<string> EnumerateRenderNodes()

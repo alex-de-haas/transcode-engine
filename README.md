@@ -20,16 +20,18 @@ cross-app dependency.
 ## Status
 
 Implemented:
-- **App manifest** (`manifest.json`) — a `docker` service with a `/dev/dri` device passthrough (requires
-  docker-host capabilities/devices support) plus a `local` (native) runtime profile for host-native encoders
-  (macOS VideoToolbox), a shared `media` mount, and the control port.
+- **App manifest** (`manifest.json`) — a default `docker` service (software encoding, starts on any host),
+  an opt-in `docker-vaapi` profile that adds the `/dev/dri` device passthrough for Linux hosts that expose a
+  render node (requires docker-host capabilities/devices support), and a `local` (native) runtime profile for
+  host-native encoders (macOS VideoToolbox), plus a shared `media` mount and the control port.
 - **Container** (`Dockerfile` + `docker/entrypoint.sh`) — ffmpeg + the VA-API userspace stack
   (`mesa-va-drivers` covers Intel iHD/i965 and AMD radeonsi). The entrypoint logs the visible `/dev/dri`
   devices and a best-effort `vainfo` so a misconfigured passthrough is obvious in the logs; it never fails
   the start (with no device, software encoding still works).
 - **ffmpeg engine** (`src/TranscodeEngine.Api/Transcoding`) — a bounded set of worker loops drain a job
   queue, spawn ffmpeg per job (VAAPI software-decode → `hwupload` → hardware-encode; VideoToolbox on native
-  macOS; or libx264/libx265), and parse ffmpeg's `-progress` stream into live snapshots.
+  macOS; AMF + D3D11VA on native Windows + AMD; or libx264/libx265), and parse ffmpeg's `-progress` stream
+  into live snapshots.
 - **Control API + SSE** (`src/TranscodeEngine.Api/Api`, `.../Realtime`) — create/list/inspect/cancel/remove
   jobs, and `GET /events` streaming progress + started/completed/errored transitions.
 - **Multiple media mounts** — one labelled host path per catalog filesystem, selected per job by
@@ -83,9 +85,25 @@ engine runs natively on macOS — see [Hardware acceleration](#hardware-accelera
 
 | Encoder | Runtime | How |
 | --- | --- | --- |
-| **VAAPI** (Intel / AMD) | `docker` | A passed-through `/dev/dri` render node (manifest `devices`). The default production target. |
+| **VAAPI** (Intel / AMD) | `docker-vaapi` | A passed-through `/dev/dri` render node (manifest `devices`). Opt-in profile — the host must expose a render node, since Docker hard-fails container creation when `--device /dev/dri` is missing. |
 | **VideoToolbox** (Apple) | `local` (native) | The engine runs natively on the macOS host via the `localCommand` runtime; the host's `ffmpeg` reaches VideoToolbox directly. |
-| **Software** (libx264 / libx265) | any | Fallback when no hardware is available. |
+| **AMF** (AMD, Windows) | `local` (native) | The engine runs natively on the Windows host via the `localCommand` runtime; the host's `ffmpeg` hardware-decodes on the AMD VCN via D3D11VA and hardware-encodes with `*_amf`. The path for AMD on Windows, where VAAPI does not exist. |
+| **Software** (libx264 / libx265) | `docker` (default) | Fallback when no hardware is available. Starts on any host, including macOS Docker Desktop. |
+
+**Why VAAPI is an opt-in profile.** A docker `--device /dev/dri` is a hard requirement: if the host has no
+render node, the daemon refuses to create the container with
+`error gathering device information while adding custom device "/dev/dri": no such file or directory` — the
+container never starts, so the engine's own software fallback never gets a chance to run. The default
+`docker` profile therefore carries **no** device and always starts; enable hardware only where the node
+actually exists:
+
+```bash
+# Default: software encoding, starts everywhere (incl. macOS Docker Desktop, which has no /dev/dri).
+hosty apps install . --runtime docker
+
+# Hardware VAAPI: only on a Linux host that exposes a render node (verify `ls -la /dev/dri` first).
+hosty apps install . --runtime docker-vaapi
+```
 
 **Why VideoToolbox needs the native runtime.** Docker on macOS runs containers in a Linux VM with no access
 to Apple frameworks or the GPU, so VideoToolbox (and any hardware encode) is unreachable from the `docker`
@@ -101,6 +119,23 @@ hosty apps start com.haas.transcode-engine
 `HWACCEL=auto` then picks VideoToolbox automatically on macOS; set `HWACCEL=videotoolbox` to force it. The
 same `local` runtime is how you'd reach any other host-native encoder (e.g. NVENC) without docker device
 plumbing.
+
+**Why AMD on Windows needs the native runtime.** VAAPI is Linux-only, and Docker Desktop on Windows runs
+containers in a WSL2 VM with no `/dev/dri` — so the AMD VCN is unreachable from any `docker` profile there.
+The native path is the AMD **AMF** stack: hardware decode through **D3D11VA** plus the `*_amf` encoders, both
+served by the host's `ffmpeg`. Run the engine through the **`local`** runtime so `ffmpeg` is the host's own:
+
+```powershell
+# Host needs: AMD Adrenalin driver (ships amfrt64.dll), an ffmpeg build with AMF + d3d11va
+# (e.g. gyan.dev / BtbN) on PATH, and the .NET SDK.
+hosty apps install . --runtime local
+hosty apps start com.haas.transcode-engine
+```
+
+`HWACCEL=auto` picks AMF automatically on a Windows host whose AMD driver is present (the engine probes for
+`amfrt64.dll`); set `HWACCEL=amf` to force it. If the runtime is missing, the job falls back to software with
+a warning rather than failing. `GET /hardware` reports `amfAvailable`, and each job's `effectiveHardware`
+reads `amf` when hardware encoding is actually in effect.
 
 ## Consumer integration
 

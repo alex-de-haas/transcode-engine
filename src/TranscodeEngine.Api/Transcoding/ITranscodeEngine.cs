@@ -8,12 +8,14 @@ public enum TranscodeVideoCodec
 }
 
 /// <summary>Which encoder family a job runs on. <see cref="Auto"/> picks VideoToolbox on a native macOS
-/// host, VAAPI when a Linux render device is present, and falls back to software otherwise.</summary>
+/// host, AMF on a native Windows host with an AMD driver, VAAPI when a Linux render device is present, and
+/// falls back to software otherwise.</summary>
 public enum TranscodeHardware
 {
     Auto,
     Vaapi,
     VideoToolbox,
+    Amf,
     None,
 }
 
@@ -36,8 +38,8 @@ public sealed record JobDescriptor(
 
 /// <summary>A live, in-memory progress snapshot (never persisted). <see cref="EffectiveHardware"/> is the
 /// encoder family actually selected after auto-detect/fallback (<c>vaapi</c> / <c>videotoolbox</c> /
-/// <c>software</c>; <c>null</c> while queued), so a consumer can tell whether hardware encoding is in
-/// effect.</summary>
+/// <c>amf</c> / <c>software</c>; <c>null</c> while queued), so a consumer can tell whether hardware encoding
+/// is in effect.</summary>
 public sealed record JobSnapshot(
     string JobId,
     string? Name,

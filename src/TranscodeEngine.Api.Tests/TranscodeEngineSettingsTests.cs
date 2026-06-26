@@ -70,6 +70,8 @@ public sealed class TranscodeEngineSettingsTests
     [Theory]
     [InlineData("auto", TranscodeHardware.Auto)]
     [InlineData("VAAPI", TranscodeHardware.Vaapi)]
+    [InlineData("videotoolbox", TranscodeHardware.VideoToolbox)]
+    [InlineData("AMF", TranscodeHardware.Amf)]
     [InlineData("none", TranscodeHardware.None)]
     [InlineData("software", TranscodeHardware.None)]
     public void ParseHardware_RecognizedValues(string raw, TranscodeHardware expected) =>

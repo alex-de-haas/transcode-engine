@@ -161,6 +161,7 @@ internal sealed class TranscodeJob
             {
                 TranscodeHardware.Vaapi => "vaapi",
                 TranscodeHardware.VideoToolbox => "videotoolbox",
+                TranscodeHardware.Amf => "amf",
                 TranscodeHardware.None => "software",
                 _ => null,
             };
