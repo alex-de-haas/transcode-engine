@@ -435,8 +435,15 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
 
     public void Dispose()
     {
-        _cts?.Cancel();
-        _cts?.Dispose();
+        // The same instance is registered three ways (FfmpegTranscodeEngine, ITranscodeEngine, and the hosted
+        // service), so the DI container can dispose it more than once. Take the CTS atomically so Dispose is
+        // idempotent — a second pass must not Cancel/Dispose an already-disposed source.
+        if (Interlocked.Exchange(ref _cts, null) is { } cts)
+        {
+            cts.Cancel();
+            cts.Dispose();
+        }
+
         foreach (var job in _jobs.Values)
         {
             job.Process?.Dispose();

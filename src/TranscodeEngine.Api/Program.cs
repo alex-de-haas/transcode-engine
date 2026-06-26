@@ -12,12 +12,13 @@ using TranscodeEngine.Api.Transcoding;
 var builder = WebApplication.CreateBuilder(args);
 
 // Under the localCommand runtime (e.g. running natively on macOS for VideoToolbox) Core assigns a loopback
-// port and injects it; bind that. The docker image sets ASPNETCORE_URLS instead, so this is skipped there.
+// port and injects it as HOSTY_PORT_CONTROL; bind exactly that. The docker image sets ASPNETCORE_URLS, so
+// this is skipped there. Do NOT fall back to the ambient PORT env — under localCommand it can be inherited
+// from Core's own environment, which would make Kestrel try to bind Core's port.
 if (string.IsNullOrWhiteSpace(builder.Configuration["ASPNETCORE_URLS"]) &&
-    (builder.Configuration["HOSTY_PORT_CONTROL"] ?? builder.Configuration["PORT"]) is { Length: > 0 } assignedPort &&
-    int.TryParse(assignedPort, out var controlPort))
+    int.TryParse(builder.Configuration["HOSTY_PORT_CONTROL"], out var controlPort))
 {
-    builder.WebHost.UseUrls($"http://127.0.0.1:{controlPort}");
+    builder.WebHost.UseUrls($"http://localhost:{controlPort}");
 }
 
 builder.Services.AddSingleton(TranscodeEngineSettings.FromConfiguration(builder.Configuration, builder.Environment.ContentRootPath));
