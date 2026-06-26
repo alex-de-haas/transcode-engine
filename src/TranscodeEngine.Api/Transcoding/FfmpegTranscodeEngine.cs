@@ -258,7 +258,9 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
 
     /// <summary>Builds the ffmpeg argument list. VAAPI uses the proven software-decode → <c>hwupload</c> →
     /// hardware-encode chain (most compatible across arbitrary inputs); VideoToolbox (native macOS) maps
-    /// straight to the platform encoder; software uses libx264/libx265 with an optional CRF.</summary>
+    /// straight to the platform encoder; AMF (native Windows + AMD) hardware-decodes on the VCN via D3D11VA
+    /// and hardware-encodes with the <c>*_amf</c> encoders; software uses libx264/libx265 with an optional
+    /// CRF.</summary>
     internal List<string> BuildArguments(TranscodeJob job, TranscodeHardware hardware)
     {
         var request = job.Request;
@@ -268,6 +270,14 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         {
             args.Add("-vaapi_device");
             args.Add(_settings.VaapiDevice);
+        }
+        else if (hardware == TranscodeHardware.Amf)
+        {
+            // Hardware-decode on the AMD VCN (D3D11VA) so both heavy stages run on the GPU. Frames are
+            // downloaded to system memory between decode and the AMF encoder (no fragile full-GPU surface
+            // hand-off), which keeps arbitrary inputs working.
+            args.Add("-hwaccel");
+            args.Add("d3d11va");
         }
 
         args.Add("-i");
@@ -284,6 +294,10 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
             case TranscodeHardware.VideoToolbox:
                 args.Add("-c:v");
                 args.Add(VideoToolboxEncoder(request.VideoCodec));
+                break;
+            case TranscodeHardware.Amf:
+                args.Add("-c:v");
+                args.Add(AmfEncoder(request.VideoCodec));
                 break;
             default:
                 args.Add("-c:v");
@@ -306,19 +320,30 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         return args;
     }
 
-    /// <summary>Resolves <see cref="TranscodeHardware.Auto"/> to VideoToolbox on a native macOS host, to
-    /// VAAPI when a Linux render device is present, otherwise software. An explicit hardware choice the host
-    /// cannot satisfy falls back to software with a warning rather than failing the job.</summary>
+    /// <summary>Resolves <see cref="TranscodeHardware.Auto"/> to VideoToolbox on a native macOS host, AMF on
+    /// a native Windows host with the AMD AMF runtime, VAAPI when a Linux render device is present, otherwise
+    /// software. An explicit hardware choice the host cannot satisfy falls back to software with a warning
+    /// rather than failing the job.</summary>
     internal TranscodeHardware ResolveHardware(TranscodeHardware requested)
     {
         var effective = requested == TranscodeHardware.Auto ? _settings.DefaultHardware : requested;
         if (effective is TranscodeHardware.Auto)
         {
-            // The .NET process only reports macOS when running natively on the host (the docker runtime is
-            // Linux), which is exactly where VideoToolbox is reachable.
-            effective = OperatingSystem.IsMacOS()
-                ? TranscodeHardware.VideoToolbox
-                : HardwareProbe.Detect(_settings).VaapiAvailable ? TranscodeHardware.Vaapi : TranscodeHardware.None;
+            // The .NET process only reports its real OS when running natively (the docker runtime is Linux),
+            // which is exactly where the platform encoders are reachable: VideoToolbox on macOS, AMF on a
+            // Windows host whose AMD driver ships the runtime.
+            if (OperatingSystem.IsMacOS())
+            {
+                effective = TranscodeHardware.VideoToolbox;
+            }
+            else if (OperatingSystem.IsWindows() && HardwareProbe.Detect(_settings).AmfAvailable)
+            {
+                effective = TranscodeHardware.Amf;
+            }
+            else
+            {
+                effective = HardwareProbe.Detect(_settings).VaapiAvailable ? TranscodeHardware.Vaapi : TranscodeHardware.None;
+            }
         }
 
         if (effective == TranscodeHardware.Vaapi && !HardwareProbe.Detect(_settings).VaapiAvailable)
@@ -330,6 +355,12 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         if (effective == TranscodeHardware.VideoToolbox && !OperatingSystem.IsMacOS())
         {
             _logger.LogWarning("VideoToolbox requested but the engine is not running natively on macOS; falling back to software.");
+            return TranscodeHardware.None;
+        }
+
+        if (effective == TranscodeHardware.Amf && !HardwareProbe.Detect(_settings).AmfAvailable)
+        {
+            _logger.LogWarning("AMF requested but the AMD AMF runtime is not available (native Windows + AMD driver required); falling back to software.");
             return TranscodeHardware.None;
         }
 
@@ -350,6 +381,13 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         _ => throw new ArgumentOutOfRangeException(nameof(codec)),
     };
 
+    private static string AmfEncoder(TranscodeVideoCodec codec) => codec switch
+    {
+        TranscodeVideoCodec.H264 => "h264_amf",
+        TranscodeVideoCodec.Hevc => "hevc_amf",
+        _ => throw new ArgumentOutOfRangeException(nameof(codec)),
+    };
+
     private static string SoftwareEncoder(TranscodeVideoCodec codec) => codec switch
     {
         TranscodeVideoCodec.H264 => "libx264",
@@ -361,6 +399,7 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
     {
         TranscodeHardware.Vaapi => VaapiEncoder(codec),
         TranscodeHardware.VideoToolbox => VideoToolboxEncoder(codec),
+        TranscodeHardware.Amf => AmfEncoder(codec),
         _ => SoftwareEncoder(codec),
     };
 
@@ -368,6 +407,7 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
     {
         TranscodeHardware.Vaapi => "vaapi",
         TranscodeHardware.VideoToolbox => "videotoolbox",
+        TranscodeHardware.Amf => "amf",
         _ => "software",
     };
 

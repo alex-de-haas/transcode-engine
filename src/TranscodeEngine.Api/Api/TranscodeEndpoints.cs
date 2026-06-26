@@ -31,7 +31,7 @@ public static class TranscodeEndpoints
 
             if (!TryParseHardware(request.HardwareAcceleration, out var hardware))
             {
-                return Results.BadRequest(new { error = $"hardwareAcceleration '{request.HardwareAcceleration}' is not supported (use 'auto', 'vaapi' or 'none')." });
+                return Results.BadRequest(new { error = $"hardwareAcceleration '{request.HardwareAcceleration}' is not supported (use 'auto', 'vaapi', 'videotoolbox', 'amf' or 'none')." });
             }
 
             if (request.Crf is < 0 or > 51)

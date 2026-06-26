@@ -6,6 +6,7 @@
   "version": "0.1.0",
   "runtimeProfiles": [
     { "key": "docker", "type": "docker", "default": true },
+    { "key": "docker-vaapi", "type": "docker" },
     { "key": "local", "type": "localCommand" }
   ],
   "defaultRuntime": "docker",
@@ -14,6 +15,13 @@
       "key": "engine",
       "runtimes": {
         "docker": {
+          "type": "docker",
+          "image": { "repository": "ghcr.io/alex-de-haas/transcode-engine", "tag": "latest", "pullPolicy": "always" },
+          "ports": [
+            { "key": "control", "containerPort": 8080, "protocol": "http" }
+          ]
+        },
+        "docker-vaapi": {
           "type": "docker",
           "image": { "repository": "ghcr.io/alex-de-haas/transcode-engine", "tag": "latest", "pullPolicy": "always" },
           "devices": ["/dev/dri"],
