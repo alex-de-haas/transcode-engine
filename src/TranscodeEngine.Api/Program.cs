@@ -11,11 +11,13 @@ using TranscodeEngine.Api.Transcoding;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Under the localCommand runtime (e.g. running natively on macOS for VideoToolbox) Core assigns a loopback
-// port and injects it as HOSTY_PORT_CONTROL; bind exactly that. The docker image sets ASPNETCORE_URLS, so
-// this is skipped there. Do NOT fall back to the ambient PORT env — under localCommand it can be inherited
-// from Core's own environment, which would make Kestrel try to bind Core's port.
-if (string.IsNullOrWhiteSpace(builder.Configuration["ASPNETCORE_URLS"]) &&
+// Bind the port for the runtime profile. Under localCommand (e.g. running natively on macOS for
+// VideoToolbox) Core assigns a loopback port and injects it as HOSTY_PORT_CONTROL — bind exactly that,
+// overriding any ASPNETCORE_URLS / PORT the child inherited from Core's own environment (Core is an ASP.NET
+// app on its own port, so those inherited values would otherwise make Kestrel try to bind Core's port).
+// Under docker the image sets DOTNET_RUNNING_IN_CONTAINER=true + ASPNETCORE_URLS, so leave Kestrel's default
+// handling alone. Mirrors media-server's HostyKestrel (which keys off the container flag, not ASPNETCORE_URLS).
+if (!string.Equals(builder.Configuration["DOTNET_RUNNING_IN_CONTAINER"], "true", StringComparison.OrdinalIgnoreCase) &&
     int.TryParse(builder.Configuration["HOSTY_PORT_CONTROL"], out var controlPort))
 {
     builder.WebHost.UseUrls($"http://localhost:{controlPort}");
