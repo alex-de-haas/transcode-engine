@@ -145,4 +145,22 @@ public sealed class FfmpegTranscodeEngineTests
         Assert.Equal("0", ValueAfter(args, "-disposition:a:0"));
         Assert.Equal("0", ValueAfter(args, "-disposition:a:2"));
     }
+
+    [Fact]
+    public void BuildArguments_DefaultSubtitle_SetsDispositionByOutputPosition()
+    {
+        var args = Engine().BuildArguments(JobWith(subtitle: new[] { 2, 5 }, defaultSubtitle: 5), TranscodeHardware.None);
+
+        Assert.Equal("default", ValueAfter(args, "-disposition:s:1"));
+        Assert.Equal("0", ValueAfter(args, "-disposition:s:0"));
+    }
+
+    [Fact]
+    public void BuildArguments_DefaultNotInSelection_LeavesDispositionsUntouched()
+    {
+        // Defence in depth: a default index that isn't one of the mapped tracks must not clear every default.
+        var args = Engine().BuildArguments(JobWith(audio: new[] { 1, 4 }, defaultAudio: 9), TranscodeHardware.None);
+
+        Assert.DoesNotContain(args, arg => arg.StartsWith("-disposition:", StringComparison.Ordinal));
+    }
 }

@@ -419,7 +419,9 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
     /// source dispositions are left untouched.</summary>
     private static void AddDefaultDisposition(List<string> args, string kind, IReadOnlyList<int>? indexes, int? defaultIndex)
     {
-        if (defaultIndex is null || indexes is null)
+        // Only act on a default that is actually one of the mapped tracks. Without this guard a stray index
+        // (the endpoint rejects it, but this stays correct in isolation) would clear every default of the type.
+        if (defaultIndex is null || indexes is null || !indexes.Contains(defaultIndex.Value))
         {
             return;
         }
