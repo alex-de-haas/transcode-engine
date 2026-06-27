@@ -109,5 +109,79 @@ public sealed class TranscodeJobEndpointTests
         Assert.Equal("job1", descriptor!.JobId);
     }
 
+    [Fact]
+    public async Task Post_CopyWithMaxHeight_ReturnsBadRequest()
+    {
+        var media = Directory.CreateTempSubdirectory("te-media").FullName;
+        var (client, app) = await HostAsync(Settings($"media={media}"), ITranscodeEngine.Imposter().Instance());
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync("/jobs", new
+        {
+            inputMountLabel = "media",
+            inputPath = "in.mkv",
+            outputPath = "out.mkv",
+            videoCodec = "copy",
+            maxHeight = 1080,
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Post_DefaultAudioWithoutList_ReturnsBadRequest()
+    {
+        var media = Directory.CreateTempSubdirectory("te-media").FullName;
+        var (client, app) = await HostAsync(Settings($"media={media}"), ITranscodeEngine.Imposter().Instance());
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync("/jobs", new
+        {
+            inputMountLabel = "media",
+            inputPath = "in.mkv",
+            outputPath = "out.mkv",
+            defaultAudioStreamIndex = 1,
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Post_DefaultAudioNotInList_ReturnsBadRequest()
+    {
+        var media = Directory.CreateTempSubdirectory("te-media").FullName;
+        var (client, app) = await HostAsync(Settings($"media={media}"), ITranscodeEngine.Imposter().Instance());
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync("/jobs", new
+        {
+            inputMountLabel = "media",
+            inputPath = "in.mkv",
+            outputPath = "out.mkv",
+            audioStreamIndexes = new[] { 1, 2 },
+            defaultAudioStreamIndex = 9,
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Post_SubtitleSelectionOnNonMatroska_ReturnsBadRequest()
+    {
+        var media = Directory.CreateTempSubdirectory("te-media").FullName;
+        var (client, app) = await HostAsync(Settings($"media={media}"), ITranscodeEngine.Imposter().Instance());
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync("/jobs", new
+        {
+            inputMountLabel = "media",
+            inputPath = "in.mkv",
+            outputPath = "out.mp4",
+            subtitleStreamIndexes = new[] { 2 },
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
     private sealed record ErrorBody(string Error);
 }

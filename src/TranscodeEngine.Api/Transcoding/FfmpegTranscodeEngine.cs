@@ -256,53 +256,140 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         }
     }
 
-    /// <summary>Builds the ffmpeg argument list. VAAPI uses the proven software-decode → <c>hwupload</c> →
-    /// hardware-encode chain (most compatible across arbitrary inputs); VideoToolbox (native macOS) maps
-    /// straight to the platform encoder; AMF (native Windows + AMD) hardware-decodes on the VCN via D3D11VA
-    /// and hardware-encodes with the <c>*_amf</c> encoders; software uses libx264/libx265 with an optional
-    /// CRF.</summary>
+    /// <summary>Builds the ffmpeg argument list. The video is either copied (remux) or re-encoded: VAAPI uses
+    /// the proven software-decode → <c>hwupload</c> → hardware-encode chain (most compatible across arbitrary
+    /// inputs); VideoToolbox (native macOS) maps straight to the platform encoder; AMF (native Windows + AMD)
+    /// hardware-decodes on the VCN via D3D11VA and hardware-encodes with the <c>*_amf</c> encoders; software
+    /// uses libx264/libx265 with an optional CRF. An optional downscale is applied with the GPU scaler on
+    /// VAAPI and the CPU <c>scale</c> filter elsewhere. Audio and (for Matroska outputs) subtitle/attachment
+    /// streams are copied — all of them, or the explicitly selected subset — so nothing is silently dropped.</summary>
     internal List<string> BuildArguments(TranscodeJob job, TranscodeHardware hardware)
     {
         var request = job.Request;
         var args = new List<string> { "-hide_banner", "-nostdin", "-y" };
 
-        if (hardware == TranscodeHardware.Vaapi)
+        // Hardware decode setup only matters when we actually re-encode; a video copy never touches the GPU.
+        if (!request.CopyVideo)
         {
-            args.Add("-vaapi_device");
-            args.Add(_settings.VaapiDevice);
-        }
-        else if (hardware == TranscodeHardware.Amf)
-        {
-            // Hardware-decode on the AMD VCN (D3D11VA), then hand the AMF encoder system-memory frames. The
-            // explicit nv12 output format forces ffmpeg to download the decoded surfaces off the GPU —
-            // without it the decoder keeps d3d11 surfaces that the *_amf encoders reject (format mismatch).
-            // The system-memory hand-off (no fragile full-GPU surface chain) also keeps arbitrary inputs working.
-            args.Add("-hwaccel");
-            args.Add("d3d11va");
-            args.Add("-hwaccel_output_format");
-            args.Add("nv12");
+            if (hardware == TranscodeHardware.Vaapi)
+            {
+                args.Add("-vaapi_device");
+                args.Add(_settings.VaapiDevice);
+            }
+            else if (hardware == TranscodeHardware.Amf)
+            {
+                // Hardware-decode on the AMD VCN (D3D11VA), then hand the AMF encoder system-memory frames. The
+                // explicit nv12 output format forces ffmpeg to download the decoded surfaces off the GPU —
+                // without it the decoder keeps d3d11 surfaces that the *_amf encoders reject (format mismatch).
+                // The system-memory hand-off (no fragile full-GPU surface chain) also keeps arbitrary inputs working.
+                args.Add("-hwaccel");
+                args.Add("d3d11va");
+                args.Add("-hwaccel_output_format");
+                args.Add("nv12");
+            }
         }
 
         args.Add("-i");
         args.Add(request.InputPath);
 
+        // Map the primary video stream (0:v:0, never a bare 0:v — that would also grab attached cover-art
+        // "video" streams the hardware encoders reject), then the selected audio and subtitle streams.
+        args.Add("-map");
+        args.Add("0:v:0");
+        AddStreamMaps(args, "a", request.AudioStreamIndexes);
+
+        // Subtitles (and the attachment fonts that ASS subs render with) only when the output is Matroska:
+        // mkv carries any subtitle/attachment codec, so a stream copy always works. Other containers (e.g.
+        // mp4) reject most subtitle codecs on copy, which would fail the whole job, so we omit them there.
+        var keepSubtitles = request.OutputPath.EndsWith(".mkv", StringComparison.OrdinalIgnoreCase);
+        if (keepSubtitles && AddStreamMaps(args, "s", request.SubtitleStreamIndexes))
+        {
+            args.Add("-map");
+            args.Add("0:t?");
+        }
+
+        // Video: copy (remux, lossless, HDR-safe) or re-encode with the selected encoder + optional downscale.
+        if (request.CopyVideo)
+        {
+            args.Add("-c:v");
+            args.Add("copy");
+        }
+        else
+        {
+            AddVideoEncode(args, request, hardware);
+        }
+
+        args.Add("-c:a");
+        args.Add("copy");
+        if (keepSubtitles)
+        {
+            args.Add("-c:s");
+            args.Add("copy");
+        }
+
+        AddDefaultDisposition(args, "a", request.AudioStreamIndexes, request.DefaultAudioStreamIndex);
+        if (keepSubtitles)
+        {
+            AddDefaultDisposition(args, "s", request.SubtitleStreamIndexes, request.DefaultSubtitleStreamIndex);
+        }
+
+        args.Add("-progress");
+        args.Add("pipe:1");
+        args.Add("-nostats");
+        args.Add(request.OutputPath);
+        return args;
+    }
+
+    /// <summary>Adds <c>-map</c> entries for one stream type. A <c>null</c> selection copies every stream of
+    /// that type (<c>0:a?</c> / <c>0:s?</c>, optional so a missing type doesn't fail the job); an explicit
+    /// list maps those absolute input indexes in order. Returns whether any stream of the type is kept.</summary>
+    private static bool AddStreamMaps(List<string> args, string kind, IReadOnlyList<int>? indexes)
+    {
+        if (indexes is null)
+        {
+            args.Add("-map");
+            args.Add($"0:{kind}?");
+            return true;
+        }
+
+        foreach (var index in indexes)
+        {
+            args.Add("-map");
+            args.Add($"0:{index}");
+        }
+
+        return indexes.Count > 0;
+    }
+
+    /// <summary>Adds the video encoder (and optional downscale) for the resolved hardware. VAAPI scales on the
+    /// GPU (<c>scale_vaapi</c> inside the hwupload chain); the other paths hand the encoder system-memory
+    /// frames, so a plain CPU <c>scale</c> fits. The caller omits <see cref="TranscodeJobRequest.MaxHeight"/>
+    /// when the source is already at or below the target, so this never upscales.</summary>
+    private void AddVideoEncode(List<string> args, TranscodeJobRequest request, TranscodeHardware hardware)
+    {
+        var height = request.MaxHeight;
         switch (hardware)
         {
             case TranscodeHardware.Vaapi:
                 args.Add("-vf");
-                args.Add("format=nv12,hwupload");
+                args.Add(height is { } h
+                    ? $"format=nv12,hwupload,scale_vaapi=w=-2:h={h.ToString(CultureInfo.InvariantCulture)}"
+                    : "format=nv12,hwupload");
                 args.Add("-c:v");
                 args.Add(VaapiEncoder(request.VideoCodec));
                 break;
             case TranscodeHardware.VideoToolbox:
+                AddCpuScale(args, height);
                 args.Add("-c:v");
                 args.Add(VideoToolboxEncoder(request.VideoCodec));
                 break;
             case TranscodeHardware.Amf:
+                AddCpuScale(args, height);
                 args.Add("-c:v");
                 args.Add(AmfEncoder(request.VideoCodec));
                 break;
             default:
+                AddCpuScale(args, height);
                 args.Add("-c:v");
                 args.Add(SoftwareEncoder(request.VideoCodec));
                 if (request.Crf is { } crf)
@@ -313,14 +400,37 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
 
                 break;
         }
+    }
 
-        args.Add("-c:a");
-        args.Add("copy");
-        args.Add("-progress");
-        args.Add("pipe:1");
-        args.Add("-nostats");
-        args.Add(request.OutputPath);
-        return args;
+    /// <summary>Adds a CPU <c>scale=-2:H</c> downscale (aspect kept, width snapped to an even number) when a
+    /// target height is set.</summary>
+    private static void AddCpuScale(List<string> args, int? maxHeight)
+    {
+        if (maxHeight is { } height)
+        {
+            args.Add("-vf");
+            args.Add($"scale=-2:{height.ToString(CultureInfo.InvariantCulture)}");
+        }
+    }
+
+    /// <summary>Forces exactly one mapped track of a type to be the container default. Needs the explicit
+    /// index list to translate the chosen absolute index into the output-relative position ffmpeg's
+    /// <c>-disposition:&lt;kind&gt;:&lt;pos&gt;</c> expects; with no list (copy-all) or no chosen default the
+    /// source dispositions are left untouched.</summary>
+    private static void AddDefaultDisposition(List<string> args, string kind, IReadOnlyList<int>? indexes, int? defaultIndex)
+    {
+        // Only act on a default that is actually one of the mapped tracks. Without this guard a stray index
+        // (the endpoint rejects it, but this stays correct in isolation) would clear every default of the type.
+        if (defaultIndex is null || indexes is null || !indexes.Contains(defaultIndex.Value))
+        {
+            return;
+        }
+
+        for (var position = 0; position < indexes.Count; position++)
+        {
+            args.Add($"-disposition:{kind}:{position}");
+            args.Add(indexes[position] == defaultIndex.Value ? "default" : "0");
+        }
     }
 
     /// <summary>Resolves <see cref="TranscodeHardware.Auto"/> to VideoToolbox on a native macOS host, AMF on

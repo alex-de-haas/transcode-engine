@@ -24,9 +24,13 @@ public static class TranscodeEndpoints
                 return Results.BadRequest(new { error = "outputPath is required." });
             }
 
-            if (!TryParseCodec(request.VideoCodec, out var codec))
+            // "copy" remuxes the video untouched; the codec/hardware/crf/height knobs are then irrelevant.
+            var copyVideo = string.Equals(request.VideoCodec?.Trim(), "copy", StringComparison.OrdinalIgnoreCase);
+
+            var codec = TranscodeVideoCodec.Hevc;
+            if (!copyVideo && !TryParseCodec(request.VideoCodec, out codec))
             {
-                return Results.BadRequest(new { error = $"videoCodec '{request.VideoCodec}' is not supported (use 'h264' or 'hevc')." });
+                return Results.BadRequest(new { error = $"videoCodec '{request.VideoCodec}' is not supported (use 'h264', 'hevc' or 'copy')." });
             }
 
             if (!TryParseHardware(request.HardwareAcceleration, out var hardware))
@@ -37,6 +41,49 @@ public static class TranscodeEndpoints
             if (request.Crf is < 0 or > 51)
             {
                 return Results.BadRequest(new { error = "crf must be between 0 and 51." });
+            }
+
+            if (request.MaxHeight is not null and (< 16 or > 4320))
+            {
+                return Results.BadRequest(new { error = "maxHeight must be between 16 and 4320." });
+            }
+
+            if (request.AudioStreamIndexes?.Any(index => index < 0) == true ||
+                request.SubtitleStreamIndexes?.Any(index => index < 0) == true)
+            {
+                return Results.BadRequest(new { error = "stream indexes must be non-negative." });
+            }
+
+            // A video copy keeps the source picture untouched, so encode-only knobs are contradictory.
+            if (copyVideo && request.MaxHeight is not null)
+            {
+                return Results.BadRequest(new { error = "maxHeight cannot be set when videoCodec is 'copy'." });
+            }
+
+            if (copyVideo && request.Crf is not null)
+            {
+                return Results.BadRequest(new { error = "crf cannot be set when videoCodec is 'copy'." });
+            }
+
+            // A chosen default needs its explicit (ordered) index list — that's how the engine turns the
+            // absolute input index into the output position ffmpeg's -disposition expects — and the chosen
+            // index must actually be in that list, otherwise it would clear every default of the type.
+            if (DefaultStreamError(request.DefaultAudioStreamIndex, request.AudioStreamIndexes, "audio") is { } audioError)
+            {
+                return Results.BadRequest(new { error = audioError });
+            }
+
+            if (DefaultStreamError(request.DefaultSubtitleStreamIndex, request.SubtitleStreamIndexes, "subtitle") is { } subtitleError)
+            {
+                return Results.BadRequest(new { error = subtitleError });
+            }
+
+            // Subtitles (and their defaults) ride only in Matroska outputs; for other containers BuildArguments
+            // drops them, so accepting a subtitle selection would silently do nothing.
+            if (!request.OutputPath.EndsWith(".mkv", StringComparison.OrdinalIgnoreCase) &&
+                (request.SubtitleStreamIndexes is not null || request.DefaultSubtitleStreamIndex is not null))
+            {
+                return Results.BadRequest(new { error = "subtitle selection is only supported for Matroska (.mkv) outputs." });
             }
 
             string inputPath;
@@ -61,7 +108,18 @@ public static class TranscodeEndpoints
                 return Results.BadRequest(new { error = "outputPath must differ from inputPath." });
             }
 
-            var jobRequest = new TranscodeJobRequest(inputPath, outputPath, codec, hardware, request.Crf);
+            var jobRequest = new TranscodeJobRequest(
+                inputPath,
+                outputPath,
+                codec,
+                hardware,
+                request.Crf,
+                copyVideo,
+                request.MaxHeight,
+                request.AudioStreamIndexes,
+                request.SubtitleStreamIndexes,
+                request.DefaultAudioStreamIndex,
+                request.DefaultSubtitleStreamIndex);
             var descriptor = await engine.CreateAsync(jobRequest, ct);
             return Results.Ok(descriptor);
         });
@@ -109,6 +167,28 @@ public static class TranscodeEndpoints
             }
         });
     }
+
+    /// <summary>Validates a chosen default track: it requires the explicit index list (to map the absolute
+    /// index to an output position) and must be present in it. Returns an error message, or null when valid
+    /// or unset.</summary>
+    private static string? DefaultStreamError(int? defaultIndex, IReadOnlyList<int>? indexes, string kind)
+    {
+        if (defaultIndex is not { } index)
+        {
+            return null;
+        }
+
+        if (indexes is null)
+        {
+            return $"{kind}StreamIndexes must be set when default{Capitalize(kind)}StreamIndex is given.";
+        }
+
+        return indexes.Contains(index)
+            ? null
+            : $"default{Capitalize(kind)}StreamIndex must be one of {kind}StreamIndexes.";
+    }
+
+    private static string Capitalize(string value) => $"{char.ToUpperInvariant(value[0])}{value[1..]}";
 
     private static bool TryParseCodec(string? raw, out TranscodeVideoCodec codec)
     {
