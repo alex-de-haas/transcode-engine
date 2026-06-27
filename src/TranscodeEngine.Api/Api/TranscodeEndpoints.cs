@@ -24,9 +24,13 @@ public static class TranscodeEndpoints
                 return Results.BadRequest(new { error = "outputPath is required." });
             }
 
-            if (!TryParseCodec(request.VideoCodec, out var codec))
+            // "copy" remuxes the video untouched; the codec/hardware/crf/height knobs are then irrelevant.
+            var copyVideo = string.Equals(request.VideoCodec?.Trim(), "copy", StringComparison.OrdinalIgnoreCase);
+
+            var codec = TranscodeVideoCodec.Hevc;
+            if (!copyVideo && !TryParseCodec(request.VideoCodec, out codec))
             {
-                return Results.BadRequest(new { error = $"videoCodec '{request.VideoCodec}' is not supported (use 'h264' or 'hevc')." });
+                return Results.BadRequest(new { error = $"videoCodec '{request.VideoCodec}' is not supported (use 'h264', 'hevc' or 'copy')." });
             }
 
             if (!TryParseHardware(request.HardwareAcceleration, out var hardware))
@@ -37,6 +41,17 @@ public static class TranscodeEndpoints
             if (request.Crf is < 0 or > 51)
             {
                 return Results.BadRequest(new { error = "crf must be between 0 and 51." });
+            }
+
+            if (request.MaxHeight is not null and (< 16 or > 4320))
+            {
+                return Results.BadRequest(new { error = "maxHeight must be between 16 and 4320." });
+            }
+
+            if (request.AudioStreamIndexes?.Any(index => index < 0) == true ||
+                request.SubtitleStreamIndexes?.Any(index => index < 0) == true)
+            {
+                return Results.BadRequest(new { error = "stream indexes must be non-negative." });
             }
 
             string inputPath;
@@ -61,7 +76,18 @@ public static class TranscodeEndpoints
                 return Results.BadRequest(new { error = "outputPath must differ from inputPath." });
             }
 
-            var jobRequest = new TranscodeJobRequest(inputPath, outputPath, codec, hardware, request.Crf);
+            var jobRequest = new TranscodeJobRequest(
+                inputPath,
+                outputPath,
+                codec,
+                hardware,
+                request.Crf,
+                copyVideo,
+                request.MaxHeight,
+                request.AudioStreamIndexes,
+                request.SubtitleStreamIndexes,
+                request.DefaultAudioStreamIndex,
+                request.DefaultSubtitleStreamIndex);
             var descriptor = await engine.CreateAsync(jobRequest, ct);
             return Results.Ok(descriptor);
         });

@@ -20,13 +20,29 @@ public enum TranscodeHardware
 }
 
 /// <summary>A resolved transcode request: absolute input/output paths (already validated against the
-/// media mounts by the endpoint) plus the encode parameters. The engine owns no path resolution.</summary>
+/// media mounts by the endpoint) plus the encode parameters. The engine owns no path resolution.
+/// <para>
+/// <see cref="CopyVideo"/> remuxes the video stream untouched (no re-encode, lossless, HDR/Dolby Vision
+/// preserved) — <see cref="VideoCodec"/>, <see cref="HardwareAcceleration"/>, <see cref="Crf"/> and
+/// <see cref="MaxHeight"/> are then irrelevant. <see cref="MaxHeight"/> downscales to that height
+/// (aspect kept, never upscales — the caller is expected to omit it when the source is already smaller).
+/// <see cref="AudioStreamIndexes"/>/<see cref="SubtitleStreamIndexes"/> are absolute input stream indices
+/// to copy, in output order; <c>null</c> copies all of that type. <see cref="DefaultAudioStreamIndex"/>/
+/// <see cref="DefaultSubtitleStreamIndex"/> mark one mapped track as the container default (requires the
+/// matching explicit index list); <c>null</c> keeps the source dispositions.
+/// </para></summary>
 public sealed record TranscodeJobRequest(
     string InputPath,
     string OutputPath,
     TranscodeVideoCodec VideoCodec,
     TranscodeHardware HardwareAcceleration,
-    int? Crf);
+    int? Crf,
+    bool CopyVideo = false,
+    int? MaxHeight = null,
+    IReadOnlyList<int>? AudioStreamIndexes = null,
+    IReadOnlyList<int>? SubtitleStreamIndexes = null,
+    int? DefaultAudioStreamIndex = null,
+    int? DefaultSubtitleStreamIndex = null);
 
 /// <summary>What is known about a job right after it is created (before the worker picks it up).</summary>
 public sealed record JobDescriptor(

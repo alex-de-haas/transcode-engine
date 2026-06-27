@@ -3,7 +3,7 @@
   "id": "com.haas.transcode-engine",
   "name": "Transcode Engine",
   "description": "ffmpeg-backed batch transcoder with VAAPI/VideoToolbox hardware acceleration and an HTTP/SSE control API, for other Hosty apps to drive re-encoding jobs over a dependency.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "source": {
     "type": "git",
     "repository": "https://github.com/alex-de-haas/transcode-engine.git",
