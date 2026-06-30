@@ -7,6 +7,7 @@
 
 using TranscodeEngine.Api.Api;
 using TranscodeEngine.Api.Realtime;
+using TranscodeEngine.Api.Telemetry;
 using TranscodeEngine.Api.Transcoding;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -22,6 +23,10 @@ if (!string.Equals(builder.Configuration["DOTNET_RUNNING_IN_CONTAINER"], "true",
 {
     builder.WebHost.UseUrls($"http://localhost:{controlPort}");
 }
+
+// Export traces/metrics/logs over OTLP to the Hosty collector when Core injects the OTEL_* env
+// (docker runtime + observability enabled); a no-op otherwise. See Telemetry/HostyTelemetry.cs.
+builder.AddHostyTelemetry();
 
 builder.Services.AddSingleton(TranscodeEngineSettings.FromConfiguration(builder.Configuration, builder.Environment.ContentRootPath));
 
