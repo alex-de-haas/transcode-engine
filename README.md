@@ -164,6 +164,16 @@ consumer app (bridge)  ──HTTP/SSE──►  control API (bridge, control por
 shared media volume (one filesystem, same paths/labels as the consumer's catalog roots)
 ```
 
+## Telemetry
+
+The engine instruments itself with OpenTelemetry — ASP.NET Core / `HttpClient` / .NET-runtime traces
+and metrics, plus `ILogger` logs — exported over OTLP/HTTP. Export is **entirely driven by the `OTEL_*`
+environment Hosty Core injects** (`src/TranscodeEngine.Api/Telemetry/HostyTelemetry.cs`): when the
+operator has enabled observability and the collector is running, traces/metrics/logs flow to it;
+otherwise — including the `local` (localCommand) runtime — the endpoint is absent and the app emits
+nothing. Opt-in is the `telemetry` block in `manifest.json`. See `docs/features/observability.md` in
+the Hosty Core platform repo (not this one).
+
 ## Open questions
 
 - **Cross-app auth/routing:** the `control` endpoint is **non-public** while Hosty cross-app `dependencies`
