@@ -11,10 +11,10 @@ namespace TranscodeEngine.Api.Telemetry;
 // resource attributes, and the trace sampler) into the docker runtime of an app whose manifest opts
 // into telemetry — but only when the operator has enabled observability and the collector is running.
 // When that endpoint is absent (the localCommand/dev runtime, or observability turned off) we wire
-// nothing, so the SDK never falls back to localhost:4318 and spams export failures. See the platform's
-// docs/features/observability.md. The parameterless AddOtlpExporter() on each signal (traces, metrics,
-// and the logging provider) reads every OTEL_* value from the environment, so there is no app-specific
-// exporter configuration to keep in sync.
+// nothing, so the SDK never falls back to localhost:4318 and spams export failures (see
+// docs/features/observability.md in the Hosty Core platform repo, not this one). The parameterless
+// AddOtlpExporter() on each signal (traces, metrics, and the logging provider) reads every OTEL_* value
+// from the environment, so there is no app-specific exporter configuration to keep in sync.
 internal static class HostyTelemetry
 {
     public static WebApplicationBuilder AddHostyTelemetry(this WebApplicationBuilder builder)
