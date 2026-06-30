@@ -12,8 +12,9 @@ namespace TranscodeEngine.Api.Telemetry;
 // into telemetry — but only when the operator has enabled observability and the collector is running.
 // When that endpoint is absent (the localCommand/dev runtime, or observability turned off) we wire
 // nothing, so the SDK never falls back to localhost:4318 and spams export failures. See the platform's
-// docs/features/observability.md. UseOtlpExporter() reads every OTEL_* value from the environment, so
-// there is no app-specific exporter configuration to keep in sync.
+// docs/features/observability.md. The parameterless AddOtlpExporter() on each signal (traces, metrics,
+// and the logging provider) reads every OTEL_* value from the environment, so there is no app-specific
+// exporter configuration to keep in sync.
 internal static class HostyTelemetry
 {
     public static WebApplicationBuilder AddHostyTelemetry(this WebApplicationBuilder builder)
@@ -27,17 +28,19 @@ internal static class HostyTelemetry
         {
             options.IncludeFormattedMessage = true;
             options.IncludeScopes = true;
+            options.AddOtlpExporter();
         });
 
         builder.Services.AddOpenTelemetry()
             .WithTracing(tracing => tracing
                 .AddAspNetCoreInstrumentation()
-                .AddHttpClientInstrumentation())
+                .AddHttpClientInstrumentation()
+                .AddOtlpExporter())
             .WithMetrics(metrics => metrics
                 .AddAspNetCoreInstrumentation()
                 .AddHttpClientInstrumentation()
-                .AddRuntimeInstrumentation())
-            .UseOtlpExporter();
+                .AddRuntimeInstrumentation()
+                .AddOtlpExporter());
 
         return builder;
     }
