@@ -149,9 +149,10 @@ runtime profiles.
 
 ## Error envelope
 
-Client errors return `400`/`404` with a body `{ "error": "<message>" }`. The message
-is human-readable and safe to surface to an operator (e.g. an unknown `mountLabel`
-lists the configured labels). `/healthz` returns `{ "status": "ok" }`.
+A `400` returns a body `{ "error": "<message>" }`. The message is human-readable and
+safe to surface to an operator (e.g. an unknown `mountLabel` lists the configured
+labels). A `404` (`GET /jobs/{jobId}` for an unknown id) has an **empty** body — there
+is no error envelope to parse. `/healthz` returns `{ "status": "ok" }`.
 
 ## Testing Expectations
 
