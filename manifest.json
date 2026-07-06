@@ -59,9 +59,9 @@
     "media": { "kind": "host-path", "multiple": true, "mode": "rw", "service": "engine", "required": true }
   },
   "settings": [
-    { "key": "HWACCEL", "type": "string", "default": "auto" },
-    { "key": "VAAPI_DEVICE", "type": "string", "default": "/dev/dri/renderD128" },
-    { "key": "MAX_CONCURRENT_JOBS", "type": "number", "default": "1" }
+    { "key": "HWACCEL", "type": "string", "default": "auto", "label": "Hardware acceleration", "description": "Default hardware acceleration when a job doesn't request one. auto picks VideoToolbox (macOS), AMF (Windows + AMD), VAAPI (Linux render device present), else software. Explicit values: vaapi, videotoolbox, amf, none." },
+    { "key": "VAAPI_DEVICE", "type": "string", "default": "/dev/dri/renderD128", "label": "VAAPI render node", "description": "Render node passed to ffmpeg's -vaapi_device and used by the hardware probe. Only relevant for VAAPI on Linux." },
+    { "key": "MAX_CONCURRENT_JOBS", "type": "number", "default": "1", "label": "Max concurrent jobs", "description": "How many transcode jobs run at once. Defaults to 1 — hardware encoders have limited sessions. Floored at 1." }
   ],
   "telemetry": { "enabled": true, "sampleRatio": 0.1 },
   "capabilities": ["update", "restart", "stop", "remove", "backup", "restore", "logs"]
