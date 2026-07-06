@@ -26,6 +26,11 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
     private static readonly TimeSpan TerminalJobRetention = TimeSpan.FromHours(1);
     private const int MaxRetainedTerminalJobs = 500;
 
+    // How often the background sweep evicts aged-out terminal jobs. A periodic sweep (not just a post-job
+    // one) is what ages out jobs that reach a terminal state without a worker finishing — notably a job
+    // cancelled while still queued — so they don't linger when the engine then goes idle.
+    private static readonly TimeSpan MaintenanceInterval = TimeSpan.FromSeconds(60);
+
     // The queue is bounded so a flood of POST /jobs can't grow it (and the job dictionary) without limit;
     // a full queue is surfaced to the caller instead of silently consuming memory.
     private const int MaxQueuedJobs = 1024;
@@ -59,9 +64,12 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
 
         _cts = new CancellationTokenSource();
         var workerCount = Math.Max(1, _settings.MaxConcurrentJobs);
-        _workers = Enumerable.Range(0, workerCount)
+        var tasks = Enumerable.Range(0, workerCount)
             .Select(_ => Task.Run(() => WorkerLoopAsync(_cts.Token)))
-            .ToArray();
+            .ToList();
+        // A background sweep so terminal jobs are evicted on a timer, not only when the next job finishes.
+        tasks.Add(Task.Run(() => MaintenanceLoopAsync(_cts.Token)));
+        _workers = tasks.ToArray();
 
         _logger.LogInformation(
             "Transcode engine started with {Workers} worker(s); default hwaccel {Hardware}, vaapi device {Device}.",
@@ -167,6 +175,22 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         }
     }
 
+    private async Task MaintenanceLoopAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(MaintenanceInterval);
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                PruneTerminalJobs();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Normal shutdown.
+        }
+    }
+
     private async Task RunJobAsync(TranscodeJob job, CancellationToken cancellationToken)
     {
         // The job can be cancelled between being dequeued and reaching here; don't spawn ffmpeg for it.
@@ -249,12 +273,15 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
             }
             catch (OperationCanceledException)
             {
+                // The wait can be cancelled three ways: a user cancel, engine shutdown, or the no-progress
+                // watchdog. Kill ffmpeg, then classify — a cancel (either kind) must report Cancelled even if
+                // the watchdog token happened to be the one that fired (a killed-but-slow-to-exit process
+                // still emits no progress), and only a genuine watchdog trip is a Failed.
                 TryKill(job);
-                if (cancellationToken.IsCancellationRequested)
+                if (ClassifyInterruptedWait(job.CancelRequested, cancellationToken.IsCancellationRequested) == JobState.Cancelled)
                 {
-                    // Shutdown: the worker token fired. Make sure ffmpeg can't outlive the engine, then stop
-                    // gracefully — a normal shutdown is not a job failure.
                     job.Complete(JobState.Cancelled);
+                    _logger.LogInformation("Job {JobId} cancelled.", job.JobId);
                 }
                 else
                 {
@@ -352,26 +379,58 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
     /// Called after each job finishes.</summary>
     private void PruneTerminalJobs()
     {
-        var now = DateTimeOffset.UtcNow;
-        foreach (var job in _jobs.Values)
+        var terminal = _jobs.Values
+            .Where(job => job.IsTerminal)
+            .Select(job => (job.JobId, job.CompletedAt))
+            .ToList();
+        foreach (var jobId in SelectTerminalJobsToEvict(terminal, DateTimeOffset.UtcNow, TerminalJobRetention, MaxRetainedTerminalJobs))
         {
-            if (job.IsTerminal && job.CompletedAt is { } completedAt && now - completedAt > TerminalJobRetention)
+            _jobs.TryRemove(jobId, out _);
+        }
+    }
+
+    /// <summary>Chooses which terminal jobs to evict: any older than <paramref name="retention"/>, plus — if
+    /// more than <paramref name="maxRetained"/> survive that cut — the oldest of the rest, so retention is
+    /// bounded by both age and count. Pure so the policy can be unit-tested directly.</summary>
+    internal static IReadOnlyList<string> SelectTerminalJobsToEvict(
+        IReadOnlyCollection<(string JobId, DateTimeOffset? CompletedAt)> terminalJobs,
+        DateTimeOffset now,
+        TimeSpan retention,
+        int maxRetained)
+    {
+        var evict = new List<string>();
+        var survivors = new List<(string JobId, DateTimeOffset? CompletedAt)>();
+        foreach (var job in terminalJobs)
+        {
+            if (job.CompletedAt is { } completedAt && now - completedAt > retention)
             {
-                _jobs.TryRemove(job.JobId, out _);
+                evict.Add(job.JobId);
+            }
+            else
+            {
+                survivors.Add(job);
             }
         }
 
-        var terminal = _jobs.Values.Where(job => job.IsTerminal).ToList();
-        if (terminal.Count > MaxRetainedTerminalJobs)
+        if (survivors.Count > maxRetained)
         {
-            foreach (var job in terminal
+            foreach (var job in survivors
                 .OrderBy(job => job.CompletedAt ?? DateTimeOffset.MinValue)
-                .Take(terminal.Count - MaxRetainedTerminalJobs))
+                .Take(survivors.Count - maxRetained))
             {
-                _jobs.TryRemove(job.JobId, out _);
+                evict.Add(job.JobId);
             }
         }
+
+        return evict;
     }
+
+    /// <summary>Classifies why the exit wait was cancelled: a user cancel or engine shutdown is a
+    /// <see cref="JobState.Cancelled"/> — even if the no-progress watchdog token is the one that fired, since
+    /// a killed-but-slow-to-exit process still emits no progress; only a wait cancelled with neither pending
+    /// is a genuine watchdog trip, reported as <see cref="JobState.Failed"/>.</summary>
+    internal static JobState ClassifyInterruptedWait(bool cancelRequested, bool shutdownRequested) =>
+        cancelRequested || shutdownRequested ? JobState.Cancelled : JobState.Failed;
 
     /// <summary>Builds the ffmpeg argument list. The video is either copied (remux) or re-encoded: VAAPI uses
     /// the proven software-decode → <c>hwupload</c> → hardware-encode chain (most compatible across arbitrary

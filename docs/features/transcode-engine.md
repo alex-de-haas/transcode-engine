@@ -35,8 +35,10 @@ only when the host (and encoder) can take the parallelism.
 - **Worker loop** dequeues an id, skips it if the job is gone or already cancelled,
   and otherwise runs it to completion before taking the next — so each worker
   processes one job at a time.
+- **Maintenance sweep** — a background loop evicts aged-out terminal jobs on a ~60s
+  timer (see [Retention](#lifecycle-and-operations)), running alongside the workers.
 - **`StopAsync`** completes the queue, cancels the worker token, kills every running
-  ffmpeg, and waits up to 10s for the workers to drain (best-effort).
+  ffmpeg, and waits up to 10s for the workers (and the sweep) to drain (best-effort).
 
 ## Lifecycle and operations
 
@@ -59,8 +61,10 @@ the API/broadcaster threads always observe a consistent `ToSnapshot()`.
 **Retention.** A terminal (completed/failed/cancelled) job is kept so a late
 `GET /jobs` poll still sees it, then evicted once it ages past ~1h (or when more than
 500 terminal jobs are retained, oldest first) — so the dictionary, and the SSE snapshot
-list, stay bounded no matter how many jobs have run. A consumer that needs a permanent
-record persists the transition events itself (see
+list, stay bounded no matter how many jobs have run. Eviction runs both after each job
+finishes and on a ~60s background sweep, so even a job cancelled while still queued
+(which never runs through the worker) ages out when the engine is otherwise idle. A
+consumer that needs a permanent record persists the transition events itself (see
 [Consumer integration](consumer-integration.md#driving-off-remote-events)).
 
 ## Running a job

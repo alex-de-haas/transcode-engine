@@ -184,4 +184,69 @@ public sealed class FfmpegTranscodeEngineTests
 
         Assert.DoesNotContain(args, arg => arg.StartsWith("-disposition:", StringComparison.Ordinal));
     }
+
+    // ---- Interrupted-wait classification (cancel vs shutdown vs watchdog) ----
+
+    [Theory]
+    [InlineData(true, false, JobState.Cancelled)]  // user cancel
+    [InlineData(false, true, JobState.Cancelled)]  // engine shutdown
+    [InlineData(true, true, JobState.Cancelled)]   // cancel racing shutdown
+    [InlineData(false, false, JobState.Failed)]    // genuine no-progress watchdog trip
+    public void ClassifyInterruptedWait_CancelOrShutdownIsCancelled_OnlyBareWaitIsWatchdogFailure(
+        bool cancelRequested, bool shutdownRequested, JobState expected)
+    {
+        // A user cancel must report Cancelled even when the watchdog token is what actually fired (a
+        // killed-but-slow-to-exit ffmpeg still emits no progress).
+        Assert.Equal(expected, FfmpegTranscodeEngine.ClassifyInterruptedWait(cancelRequested, shutdownRequested));
+    }
+
+    // ---- Terminal-job retention policy ----
+
+    [Fact]
+    public void SelectTerminalJobsToEvict_EvictsJobsOlderThanRetention()
+    {
+        var now = DateTimeOffset.UnixEpoch.AddHours(10);
+        var retention = TimeSpan.FromHours(1);
+        (string, DateTimeOffset?)[] jobs =
+        [
+            ("old", now - TimeSpan.FromHours(2)),
+            ("fresh", now - TimeSpan.FromMinutes(30)),
+            ("edge", now - retention), // exactly at retention → not strictly older → kept
+        ];
+
+        var evicted = FfmpegTranscodeEngine.SelectTerminalJobsToEvict(jobs, now, retention, maxRetained: 100);
+
+        Assert.Equal(["old"], evicted);
+    }
+
+    [Fact]
+    public void SelectTerminalJobsToEvict_CapsRetainedCount_DroppingOldestFirst()
+    {
+        var now = DateTimeOffset.UnixEpoch.AddHours(10);
+        (string, DateTimeOffset?)[] jobs =
+        [
+            ("a", now - TimeSpan.FromMinutes(4)),
+            ("b", now - TimeSpan.FromMinutes(3)),
+            ("c", now - TimeSpan.FromMinutes(2)),
+            ("d", now - TimeSpan.FromMinutes(1)),
+        ];
+
+        // All within retention, but the cap is 2 → the two oldest are evicted, newest kept.
+        var evicted = FfmpegTranscodeEngine.SelectTerminalJobsToEvict(jobs, now, TimeSpan.FromHours(1), maxRetained: 2);
+
+        Assert.Equal(["a", "b"], evicted);
+    }
+
+    [Fact]
+    public void SelectTerminalJobsToEvict_KeepsEverythingWithinRetentionAndCap()
+    {
+        var now = DateTimeOffset.UnixEpoch.AddHours(10);
+        (string, DateTimeOffset?)[] jobs =
+        [
+            ("a", now - TimeSpan.FromMinutes(2)),
+            ("b", now),
+        ];
+
+        Assert.Empty(FfmpegTranscodeEngine.SelectTerminalJobsToEvict(jobs, now, TimeSpan.FromHours(1), maxRetained: 10));
+    }
 }
