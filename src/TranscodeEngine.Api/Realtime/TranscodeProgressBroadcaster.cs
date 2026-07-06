@@ -28,6 +28,16 @@ public sealed class TranscodeProgressBroadcaster(
                 {
                     foreach (var snapshot in engine.GetAllSnapshots())
                     {
+                        // A completed/failed job's terminal state already went out as its own
+                        // completed/errored event; re-publishing it every tick would, after enough jobs,
+                        // flood each subscriber's bounded channel and drop the live frames that matter.
+                        // Cancelled jobs have no dedicated event, so they still ride the tick (until
+                        // evicted) — that's how a cancel is observed on the stream (see control-api.md).
+                        if (snapshot.State is "Completed" or "Failed")
+                        {
+                            continue;
+                        }
+
                         stream.Publish(new TranscodeEvent("progress", snapshot.JobId, snapshot));
                     }
                 }

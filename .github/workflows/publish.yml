@@ -18,9 +18,25 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Gate the image on the same tests CI runs — a commit that fails tests must never ship :latest.
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Test
+        run: dotnet test src/TranscodeEngine.Api.Tests/TranscodeEngine.Api.Tests.csproj --configuration Release
+
   build:
     name: Build (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
+    needs: [test]
     permissions:
       contents: read
       packages: write

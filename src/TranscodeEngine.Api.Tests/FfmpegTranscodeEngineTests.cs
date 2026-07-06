@@ -49,6 +49,27 @@ public sealed class FfmpegTranscodeEngineTests
     }
 
     [Fact]
+    public void BuildArguments_WritesToDestinationPath_WhenProvided()
+    {
+        // The engine encodes to a temp path and renames it onto the real output only on success, so
+        // BuildArguments must target that destination — while the muxer/subtitle decision still keys off
+        // the real (.mkv) output.
+        const string temp = "/out/.movie - HEVC.job-1.part.mkv";
+        var args = Engine().BuildArguments(Job("/out/movie - HEVC.mkv"), TranscodeHardware.None, temp);
+
+        Assert.Equal(temp, args[^1]);
+        Assert.Contains("0:s?", MapTargets(args));
+    }
+
+    [Fact]
+    public void BuildArguments_DefaultsDestinationToRequestOutput()
+    {
+        var args = Engine().BuildArguments(Job("/out/movie - HEVC.mkv"), TranscodeHardware.None);
+
+        Assert.Equal("/out/movie - HEVC.mkv", args[^1]);
+    }
+
+    [Fact]
     public void BuildArguments_MapsPrimaryVideoAndAllAudio()
     {
         var args = Engine().BuildArguments(Job("/out/movie - HEVC.mkv"), TranscodeHardware.None);
