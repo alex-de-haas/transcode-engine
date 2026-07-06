@@ -2,7 +2,7 @@
 
 Status: Implemented
 Created: 2026-07-03
-Updated: 2026-07-03
+Updated: 2026-07-06
 
 ## Description
 
@@ -102,8 +102,12 @@ these are derived.
 ## SSE event stream (`GET /events`)
 
 `GET /events` returns `text/event-stream` (with `Cache-Control: no-cache` and
-`X-Accel-Buffering: no`) and streams until the client disconnects. Each frame is a
-named event whose `data:` is a JSON `TranscodeEvent`:
+`X-Accel-Buffering: no`) and streams until the client disconnects. On connect the
+server immediately flushes a `: connected` comment so `EventSource` fires `open` (and
+any proxy commits the response headers) even with no jobs running, and it emits a
+`: keepalive` comment every 15s while idle so a proxy/browser idle-timeout can't drop a
+live but quiet stream. Each data frame is a named event whose `data:` is a JSON
+`TranscodeEvent`:
 
 ```
 event: progress
@@ -112,7 +116,7 @@ data: {"type":"progress","jobId":"abc…","snapshot":{…}}
 
 | Event | When | Payload |
 | --- | --- | --- |
-| `progress` | Every 1.5s, one frame per job | `snapshot` set |
+| `progress` | Every 1.5s, one frame per **non-terminal** job (completed/failed jobs are skipped — their terminal state already went out as `completed`/`errored`) | `snapshot` set |
 | `started` | A job transitions queued → running | `snapshot` set |
 | `completed` | A job finishes successfully | `snapshot` set |
 | `errored` | A job fails (non-zero ffmpeg exit or an error) | `snapshot` set |

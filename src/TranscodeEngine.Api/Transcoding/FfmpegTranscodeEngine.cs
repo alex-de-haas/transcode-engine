@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.Threading.Channels;
@@ -12,10 +13,33 @@ namespace TranscodeEngine.Api.Transcoding;
 /// </summary>
 public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, IDisposable
 {
+    // A job is killed if ffmpeg emits no -progress line for this long: a hung VAAPI init, a stalled NFS
+    // read, or a special file (FIFO) that never returns would otherwise block its worker — and, at the
+    // default MAX_CONCURRENT_JOBS=1, the whole engine — indefinitely.
+    private static readonly TimeSpan NoProgressTimeout = TimeSpan.FromMinutes(5);
+
+    // Hard cap on the ffprobe duration probe so the same kind of special/blocked file can't hang CreateAsync.
+    private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(30);
+
+    // Terminal jobs are kept this long (and at most this many) so a late GET /jobs poll still sees them,
+    // then evicted — otherwise the in-memory dictionary (and the SSE snapshot list) grows without bound.
+    private static readonly TimeSpan TerminalJobRetention = TimeSpan.FromHours(1);
+    private const int MaxRetainedTerminalJobs = 500;
+
+    // How often the background sweep evicts aged-out terminal jobs. A periodic sweep (not just a post-job
+    // one) is what ages out jobs that reach a terminal state without a worker finishing — notably a job
+    // cancelled while still queued — so they don't linger when the engine then goes idle.
+    private static readonly TimeSpan MaintenanceInterval = TimeSpan.FromSeconds(60);
+
+    // The queue is bounded so a flood of POST /jobs can't grow it (and the job dictionary) without limit;
+    // a full queue is surfaced to the caller instead of silently consuming memory.
+    private const int MaxQueuedJobs = 1024;
+
     private readonly TranscodeEngineSettings _settings;
     private readonly ILogger<FfmpegTranscodeEngine> _logger;
     private readonly ConcurrentDictionary<string, TranscodeJob> _jobs = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Channel<string> _queue = Channel.CreateUnbounded<string>();
+    private readonly Channel<string> _queue = Channel.CreateBounded<string>(
+        new BoundedChannelOptions(MaxQueuedJobs) { FullMode = BoundedChannelFullMode.Wait });
 
     private CancellationTokenSource? _cts;
     private Task[] _workers = [];
@@ -40,9 +64,12 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
 
         _cts = new CancellationTokenSource();
         var workerCount = Math.Max(1, _settings.MaxConcurrentJobs);
-        _workers = Enumerable.Range(0, workerCount)
+        var tasks = Enumerable.Range(0, workerCount)
             .Select(_ => Task.Run(() => WorkerLoopAsync(_cts.Token)))
-            .ToArray();
+            .ToList();
+        // A background sweep so terminal jobs are evicted on a timer, not only when the next job finishes.
+        tasks.Add(Task.Run(() => MaintenanceLoopAsync(_cts.Token)));
+        _workers = tasks.ToArray();
 
         _logger.LogInformation(
             "Transcode engine started with {Workers} worker(s); default hwaccel {Hardware}, vaapi device {Device}.",
@@ -83,7 +110,8 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         if (!_queue.Writer.TryWrite(jobId))
         {
             _jobs.TryRemove(jobId, out _);
-            throw new InvalidOperationException("The transcode engine is shutting down and cannot accept new jobs.");
+            throw new InvalidOperationException(
+                "The transcode engine cannot accept the job (the queue is full or the engine is shutting down).");
         }
 
         return new JobDescriptor(jobId, request.InputPath, request.OutputPath, duration, inputSize);
@@ -147,6 +175,22 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         }
     }
 
+    private async Task MaintenanceLoopAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(MaintenanceInterval);
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                PruneTerminalJobs();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Normal shutdown.
+        }
+    }
+
     private async Task RunJobAsync(TranscodeJob job, CancellationToken cancellationToken)
     {
         // The job can be cancelled between being dequeued and reaching here; don't spawn ffmpeg for it.
@@ -167,25 +211,44 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
             "Job {JobId}: encoding with {Encoder} ({Acceleration}).",
             job.JobId, EncoderName(job.Request.VideoCodec, hardware), HardwareLabel(hardware));
 
+        // Encode to a temp file beside the destination and only rename it onto the real output on a clean
+        // exit — so a failed, cancelled, or interrupted encode can never truncate/destroy a pre-existing
+        // file at outputPath (ffmpeg's -y truncates its target the moment it starts).
+        var outputPath = job.Request.OutputPath;
+        var tempPath = TempOutputPath(outputPath, job.JobId);
+
         var psi = new ProcessStartInfo(_settings.FfmpegPath)
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
         };
-        foreach (var arg in BuildArguments(job, hardware))
+        foreach (var arg in BuildArguments(job, hardware, tempPath))
         {
             psi.ArgumentList.Add(arg);
         }
 
-        Directory.CreateDirectory(Path.GetDirectoryName(job.Request.OutputPath) ?? ".");
+        Directory.CreateDirectory(Path.GetDirectoryName(outputPath) ?? ".");
 
         var stderrTail = new StderrTail();
         try
         {
             using var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
+
+            // Watchdog: reset on every progress line; if ffmpeg goes silent for NoProgressTimeout the linked
+            // token cancels the wait and we kill it. Linked to the worker token so shutdown still cancels too.
+            using var watchdog = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
             process.ErrorDataReceived += (_, e) => stderrTail.Append(e.Data);
-            process.OutputDataReceived += (_, e) => job.ApplyProgressLine(e.Data);
+            process.OutputDataReceived += (_, e) =>
+            {
+                job.ApplyProgressLine(e.Data);
+                if (e.Data is not null)
+                {
+                    try { watchdog.CancelAfter(NoProgressTimeout); }
+                    catch (ObjectDisposedException) { /* The wait already returned; nothing to extend. */ }
+                }
+            };
 
             if (!process.Start())
             {
@@ -195,6 +258,7 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
             job.AttachProcess(process);
             process.BeginErrorReadLine();
             process.BeginOutputReadLine();
+            watchdog.CancelAfter(NoProgressTimeout);
 
             // A cancel that arrived during start (before the process was attached) would have been a no-op;
             // now that the process is attached, honour it.
@@ -205,34 +269,56 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
 
             try
             {
-                await process.WaitForExitAsync(cancellationToken);
+                await process.WaitForExitAsync(watchdog.Token);
             }
             catch (OperationCanceledException)
             {
-                // Shutdown: the worker token fired. Make sure ffmpeg can't outlive the engine, then stop
-                // gracefully — a normal shutdown is not a job failure.
+                // The wait can be cancelled three ways: a user cancel, engine shutdown, or the no-progress
+                // watchdog. Kill ffmpeg, then classify — a cancel (either kind) must report Cancelled even if
+                // the watchdog token happened to be the one that fired (a killed-but-slow-to-exit process
+                // still emits no progress), and only a genuine watchdog trip is a Failed.
                 TryKill(job);
-                job.Complete(JobState.Cancelled);
+                if (ClassifyInterruptedWait(job.CancelRequested, cancellationToken.IsCancellationRequested) == JobState.Cancelled)
+                {
+                    job.Complete(JobState.Cancelled);
+                    _logger.LogInformation("Job {JobId} cancelled.", job.JobId);
+                }
+                else
+                {
+                    // Watchdog: ffmpeg produced no progress for NoProgressTimeout (hung device init, stalled
+                    // read, a special file that never returns) — fail the job rather than block the worker.
+                    job.Fail();
+                    JobFailed?.Invoke(this, job.JobId);
+                    _logger.LogWarning(
+                        "Job {JobId} killed: ffmpeg made no progress for {Timeout}. {Tail}",
+                        job.JobId, NoProgressTimeout, stderrTail.Text);
+                }
+
                 return;
             }
+
+            // WaitForExitAsync doesn't guarantee the async stdout/stderr callbacks have drained; the blocking
+            // overload does, so the failure tail below carries ffmpeg's real last lines.
+            process.WaitForExit();
 
             if (job.CancelRequested)
             {
                 job.Complete(JobState.Cancelled);
                 _logger.LogInformation("Job {JobId} cancelled.", job.JobId);
             }
-            else if (process.ExitCode == 0)
+            else if (process.ExitCode == 0 && TryPublishOutput(job, tempPath, outputPath, stderrTail))
             {
                 job.Complete(JobState.Completed);
                 JobCompleted?.Invoke(this, job.JobId);
                 _logger.LogInformation("Job {JobId} completed.", job.JobId);
             }
-            else
+            else if (process.ExitCode != 0)
             {
                 job.Fail();
                 JobFailed?.Invoke(this, job.JobId);
                 _logger.LogWarning("Job {JobId} failed (ffmpeg exit {Code}). {Tail}", job.JobId, process.ExitCode, stderrTail.Text);
             }
+            // else: ffmpeg exited 0 but the rename failed — TryPublishOutput already marked the job Failed.
         }
         catch (Exception exception)
         {
@@ -246,15 +332,105 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
             // kill is a no-op instead of touching a disposed object.
             job.DetachProcess();
 
-            // A cancelled or failed encode leaves a useless, partial output file. Clean it up so it doesn't
-            // linger on the catalog (wasting space and confusing a later re-convert). A completed job's
-            // output is the good result and is kept.
+            // Only ever discard the temp encode — the pre-existing file at outputPath is never touched on
+            // failure/cancel. A completed job has already renamed its temp onto outputPath.
             if (job.State is JobState.Cancelled or JobState.Failed)
             {
-                TryDeleteOutput(job.Request.OutputPath);
+                TryDeleteOutput(tempPath);
             }
+
+            PruneTerminalJobs();
         }
     }
+
+    /// <summary>Atomically renames the finished temp encode onto its real output path (replacing any
+    /// existing file — the successful re-encode is the new good result). Returns false, and marks the job
+    /// failed, if the rename can't be done, so a broken publish is never reported as a success.</summary>
+    private bool TryPublishOutput(TranscodeJob job, string tempPath, string outputPath, StderrTail stderrTail)
+    {
+        try
+        {
+            File.Move(tempPath, outputPath, overwrite: true);
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            job.Fail();
+            JobFailed?.Invoke(this, job.JobId);
+            _logger.LogError(
+                exception, "Job {JobId}: ffmpeg succeeded but publishing the output {Output} failed. {Tail}",
+                job.JobId, outputPath, stderrTail.Text);
+            return false;
+        }
+    }
+
+    /// <summary>The in-progress encode target: a hidden temp file beside the real output that preserves its
+    /// extension — ffmpeg picks the muxer from it — and is renamed onto the output only on success.</summary>
+    private static string TempOutputPath(string outputPath, string jobId)
+    {
+        var directory = Path.GetDirectoryName(outputPath) ?? ".";
+        var stem = Path.GetFileNameWithoutExtension(outputPath);
+        var extension = Path.GetExtension(outputPath);
+        return Path.Combine(directory, $".{stem}.{jobId}.part{extension}");
+    }
+
+    /// <summary>Evicts terminal jobs once they age past the retention window, and caps how many are kept, so
+    /// the in-memory job dictionary and the SSE snapshot list stay bounded no matter how many jobs have run.
+    /// Called after each job finishes.</summary>
+    private void PruneTerminalJobs()
+    {
+        var terminal = _jobs.Values
+            .Where(job => job.IsTerminal)
+            .Select(job => (job.JobId, job.CompletedAt))
+            .ToList();
+        foreach (var jobId in SelectTerminalJobsToEvict(terminal, DateTimeOffset.UtcNow, TerminalJobRetention, MaxRetainedTerminalJobs))
+        {
+            _jobs.TryRemove(jobId, out _);
+        }
+    }
+
+    /// <summary>Chooses which terminal jobs to evict: any older than <paramref name="retention"/>, plus — if
+    /// more than <paramref name="maxRetained"/> survive that cut — the oldest of the rest, so retention is
+    /// bounded by both age and count. Pure so the policy can be unit-tested directly.</summary>
+    internal static IReadOnlyList<string> SelectTerminalJobsToEvict(
+        IReadOnlyCollection<(string JobId, DateTimeOffset? CompletedAt)> terminalJobs,
+        DateTimeOffset now,
+        TimeSpan retention,
+        int maxRetained)
+    {
+        var evict = new List<string>();
+        var survivors = new List<(string JobId, DateTimeOffset? CompletedAt)>();
+        foreach (var job in terminalJobs)
+        {
+            if (job.CompletedAt is { } completedAt && now - completedAt > retention)
+            {
+                evict.Add(job.JobId);
+            }
+            else
+            {
+                survivors.Add(job);
+            }
+        }
+
+        if (survivors.Count > maxRetained)
+        {
+            foreach (var job in survivors
+                .OrderBy(job => job.CompletedAt ?? DateTimeOffset.MinValue)
+                .Take(survivors.Count - maxRetained))
+            {
+                evict.Add(job.JobId);
+            }
+        }
+
+        return evict;
+    }
+
+    /// <summary>Classifies why the exit wait was cancelled: a user cancel or engine shutdown is a
+    /// <see cref="JobState.Cancelled"/> — even if the no-progress watchdog token is the one that fired, since
+    /// a killed-but-slow-to-exit process still emits no progress; only a wait cancelled with neither pending
+    /// is a genuine watchdog trip, reported as <see cref="JobState.Failed"/>.</summary>
+    internal static JobState ClassifyInterruptedWait(bool cancelRequested, bool shutdownRequested) =>
+        cancelRequested || shutdownRequested ? JobState.Cancelled : JobState.Failed;
 
     /// <summary>Builds the ffmpeg argument list. The video is either copied (remux) or re-encoded: VAAPI uses
     /// the proven software-decode → <c>hwupload</c> → hardware-encode chain (most compatible across arbitrary
@@ -263,9 +439,12 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
     /// uses libx264/libx265 with an optional CRF. An optional downscale is applied with the GPU scaler on
     /// VAAPI and the CPU <c>scale</c> filter elsewhere. Audio and (for Matroska outputs) subtitle/attachment
     /// streams are copied — all of them, or the explicitly selected subset — so nothing is silently dropped.</summary>
-    internal List<string> BuildArguments(TranscodeJob job, TranscodeHardware hardware)
+    internal List<string> BuildArguments(TranscodeJob job, TranscodeHardware hardware, string? destinationPath = null)
     {
         var request = job.Request;
+        // The muxer is inferred from the destination's extension; the temp path preserves it, so the
+        // keepSubtitles (.mkv) decision below is unaffected whether we write the temp or the final path.
+        var output = destinationPath ?? request.OutputPath;
         var args = new List<string> { "-hide_banner", "-nostdin", "-y" };
 
         // Hardware decode setup only matters when we actually re-encode; a video copy never touches the GPU.
@@ -336,7 +515,7 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         args.Add("-progress");
         args.Add("pipe:1");
         args.Add("-nostats");
-        args.Add(request.OutputPath);
+        args.Add(output);
         return args;
     }
 
@@ -529,12 +708,18 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
 
     private async Task<double?> ProbeDurationAsync(string inputPath, CancellationToken cancellationToken)
     {
+        // Bound the probe so a FIFO/special file or a blocked read can't hang CreateAsync forever.
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(ProbeTimeout);
+        var probeToken = timeoutCts.Token;
         try
         {
             var psi = new ProcessStartInfo(_settings.FfprobePath)
             {
                 RedirectStandardOutput = true,
-                RedirectStandardError = true,
+                // stderr is silenced by -v quiet and never read; leaving it un-redirected avoids a full
+                // stderr pipe deadlocking ffprobe.
+                RedirectStandardError = false,
                 UseShellExecute = false,
             };
             foreach (var arg in new[]
@@ -556,16 +741,23 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
 
             try
             {
-                var stdout = await process.StandardOutput.ReadToEndAsync(cancellationToken);
-                await process.WaitForExitAsync(cancellationToken);
+                var stdout = await process.StandardOutput.ReadToEndAsync(probeToken);
+                await process.WaitForExitAsync(probeToken);
                 return double.TryParse(stdout.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds) ? seconds : null;
             }
             catch (OperationCanceledException)
             {
-                // Don't leave ffprobe running when the create request is cancelled.
+                // Don't leave ffprobe running when the create request is cancelled or the probe times out.
                 TryKillProcess(process);
                 throw;
             }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // Our own timeout fired (not a client cancel) — fall back to byte-only progress rather than
+            // hanging or failing the create.
+            _logger.LogWarning("Probing the duration of {Input} timed out after {Timeout}; progress will be byte-only.", inputPath, ProbeTimeout);
+            return null;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -597,9 +789,10 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
                 process.Kill(entireProcessTree: true);
             }
         }
-        catch (Exception exception) when (exception is InvalidOperationException or NotSupportedException or ObjectDisposedException)
+        catch (Exception exception) when (exception is InvalidOperationException or NotSupportedException or ObjectDisposedException or Win32Exception)
         {
-            // Process already gone or disposed.
+            // Process already gone or disposed, or the kill raced the OS teardown (notably Windows/AMF,
+            // which surfaces as a Win32Exception) — either way there is nothing left to kill.
         }
     }
 

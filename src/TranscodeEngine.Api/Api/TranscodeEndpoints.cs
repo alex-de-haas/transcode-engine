@@ -9,6 +9,7 @@ namespace TranscodeEngine.Api.Api;
 public static class TranscodeEndpoints
 {
     private static readonly JsonSerializerOptions EventJson = new(JsonSerializerDefaults.Web);
+    private static readonly TimeSpan KeepaliveInterval = TimeSpan.FromSeconds(15);
 
     public static void MapTranscodeEndpoints(this IEndpointRouteBuilder app)
     {
@@ -150,11 +151,41 @@ public static class TranscodeEndpoints
             var (id, reader) = stream.Subscribe();
             try
             {
-                await foreach (var evt in reader.ReadAllAsync(ct))
+                // Flush a comment immediately so EventSource fires `open` and any proxy commits the response
+                // headers even when there are no jobs — otherwise an idle stream sends no bytes and the
+                // client hangs "connecting" until a proxy idle-timeout drops it.
+                await context.Response.WriteAsync(": connected\n\n", ct);
+                await context.Response.Body.FlushAsync(ct);
+
+                // Emit a keepalive comment on idle so proxy/browser idle-timeouts don't drop a live but
+                // quiet stream (no jobs running means no progress ticks to carry the connection).
+                using var keepalive = new PeriodicTimer(KeepaliveInterval);
+                var keepaliveTick = keepalive.WaitForNextTickAsync(ct).AsTask();
+                var nextEvent = reader.WaitToReadAsync(ct).AsTask();
+                while (true)
                 {
-                    var data = JsonSerializer.Serialize(evt, EventJson);
-                    await context.Response.WriteAsync($"event: {evt.Type}\ndata: {data}\n\n", ct);
+                    if (await Task.WhenAny(keepaliveTick, nextEvent) == keepaliveTick)
+                    {
+                        await keepaliveTick;
+                        await context.Response.WriteAsync(": keepalive\n\n", ct);
+                        await context.Response.Body.FlushAsync(ct);
+                        keepaliveTick = keepalive.WaitForNextTickAsync(ct).AsTask();
+                        continue;
+                    }
+
+                    if (!await nextEvent)
+                    {
+                        break; // The subscription channel completed (unsubscribed).
+                    }
+
+                    while (reader.TryRead(out var evt))
+                    {
+                        var data = JsonSerializer.Serialize(evt, EventJson);
+                        await context.Response.WriteAsync($"event: {evt.Type}\ndata: {data}\n\n", ct);
+                    }
+
                     await context.Response.Body.FlushAsync(ct);
+                    nextEvent = reader.WaitToReadAsync(ct).AsTask();
                 }
             }
             catch (OperationCanceledException)

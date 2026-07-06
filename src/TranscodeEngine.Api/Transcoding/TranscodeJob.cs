@@ -29,6 +29,7 @@ internal sealed class TranscodeJob
     private double _speed;
     private double _outTimeSeconds;
     private long _outputSize;
+    private DateTimeOffset? _completedAt;
 
     public TranscodeJob(string jobId, TranscodeJobRequest request, double? durationSeconds)
     {
@@ -52,6 +53,16 @@ internal sealed class TranscodeJob
         get { lock (_gate) { return _state; } }
     }
 
+    /// <summary>When the job reached a terminal state, used to age it out of retention; <c>null</c> while
+    /// queued/running.</summary>
+    public DateTimeOffset? CompletedAt
+    {
+        get { lock (_gate) { return _completedAt; } }
+    }
+
+    /// <summary>True once the job has finished (completed, failed, or cancelled).</summary>
+    public bool IsTerminal => State is JobState.Completed or JobState.Failed or JobState.Cancelled;
+
     public void Start(TranscodeHardware hardware)
     {
         lock (_gate)
@@ -72,6 +83,7 @@ internal sealed class TranscodeJob
         lock (_gate)
         {
             _state = state;
+            _completedAt = DateTimeOffset.UtcNow;
             if (state == JobState.Completed)
             {
                 if (_durationSeconds is { } duration && duration > 0)
@@ -90,6 +102,7 @@ internal sealed class TranscodeJob
         lock (_gate)
         {
             _state = JobState.Failed;
+            _completedAt = DateTimeOffset.UtcNow;
             _speed = 0;
             _fps = 0;
         }

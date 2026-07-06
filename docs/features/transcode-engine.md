@@ -2,7 +2,7 @@
 
 Status: Implemented
 Created: 2026-07-03
-Updated: 2026-07-03
+Updated: 2026-07-06
 
 ## Description
 
@@ -21,21 +21,24 @@ device, or the worker count.
 ## Job queue and worker loops
 
 On `StartAsync`, the engine creates its app-data directory and every media root, then
-starts `max(1, MAX_CONCURRENT_JOBS)` worker tasks, each draining a shared unbounded
-`Channel<string>` of job ids. `MAX_CONCURRENT_JOBS` defaults to **1** because
-hardware encoders have a limited number of concurrent sessions; raise it only when
-the host (and encoder) can take the parallelism.
+starts `max(1, MAX_CONCURRENT_JOBS)` worker tasks, each draining a shared **bounded**
+`Channel<string>` of job ids (capped at 1024 pending, so a flood of `POST /jobs` can't
+grow the queue and the job dictionary without limit). `MAX_CONCURRENT_JOBS` defaults to
+**1** because hardware encoders have a limited number of concurrent sessions; raise it
+only when the host (and encoder) can take the parallelism.
 
-- **`CreateAsync`** probes the input duration with ffprobe (best-effort — a failure
-  just means byte-only progress), reads the input file size, mints a GUID job id,
-  stores the `TranscodeJob`, and writes the id to the queue. The job runs as soon as
-  a worker is free. If the engine is shutting down the write fails and the job is
-  removed with an error.
+- **`CreateAsync`** probes the input duration with ffprobe (best-effort — a failure or
+  a probe that exceeds the 30s timeout just means byte-only progress), reads the input
+  file size, mints a GUID job id, stores the `TranscodeJob`, and writes the id to the
+  queue. The job runs as soon as a worker is free. If the queue is full or the engine
+  is shutting down the write fails and the job is removed with an error.
 - **Worker loop** dequeues an id, skips it if the job is gone or already cancelled,
   and otherwise runs it to completion before taking the next — so each worker
   processes one job at a time.
+- **Maintenance sweep** — a background loop evicts aged-out terminal jobs on a ~60s
+  timer (see [Retention](#lifecycle-and-operations)), running alongside the workers.
 - **`StopAsync`** completes the queue, cancels the worker token, kills every running
-  ffmpeg, and waits up to 10s for the workers to drain (best-effort).
+  ffmpeg, and waits up to 10s for the workers (and the sweep) to drain (best-effort).
 
 ## Lifecycle and operations
 
@@ -55,6 +58,15 @@ State lives in a single `ConcurrentDictionary<string, TranscodeJob>` keyed by jo
 each `TranscodeJob` guards its own mutable fields with a lock so the worker thread and
 the API/broadcaster threads always observe a consistent `ToSnapshot()`.
 
+**Retention.** A terminal (completed/failed/cancelled) job is kept so a late
+`GET /jobs` poll still sees it, then evicted once it ages past ~1h (or when more than
+500 terminal jobs are retained, oldest first) — so the dictionary, and the SSE snapshot
+list, stay bounded no matter how many jobs have run. Eviction runs both after each job
+finishes and on a ~60s background sweep, so even a job cancelled while still queued
+(which never runs through the worker) ages out when the engine is otherwise idle. A
+consumer that needs a permanent record persists the transition events itself (see
+[Consumer integration](consumer-integration.md#driving-off-remote-events)).
+
 ## Running a job
 
 `RunJobAsync` is the heart of the worker:
@@ -66,18 +78,27 @@ the API/broadcaster threads always observe a consistent `ToSnapshot()`.
    `JobStarted`, and log the actually-selected encoder (e.g.
    `Job …: encoding with hevc_vaapi (vaapi)`).
 3. **Spawn ffmpeg** with the built argument list, redirecting stdout (the `-progress`
-   stream) and stderr (a rolling 20-line tail kept for diagnostics). The output
-   directory is created first.
+   stream) and stderr (a rolling 20-line tail kept for diagnostics). ffmpeg writes to
+   a **hidden temp file beside the destination** (`.{name}.{jobId}.part{ext}`, the
+   extension preserved so ffmpeg still infers the muxer), never straight to the real
+   output. The output directory is created first.
 4. **Honour a late cancel.** A cancel that arrived while the process was starting
    (before it was attached) is applied once the process is attached.
-5. **Wait for exit.** A worker-token cancellation (shutdown) kills ffmpeg and marks
-   the job `Cancelled` — a normal shutdown is not a job failure. Otherwise: a set
-   `CancelRequested` → `Cancelled`; exit code `0` → `Completed` + `JobCompleted`;
-   any other exit → `Failed` + `JobFailed` (logged with the stderr tail).
-6. **Clean up.** The process reference is dropped (so a later cancel/shutdown kill is
-   a no-op, never touching a disposed object), and a **cancelled or failed** job's
-   partial output file is deleted so it doesn't linger on the catalog. A completed
-   job's output is the good result and is kept.
+5. **Wait for exit**, guarded by a no-progress **watchdog**: the wait is cancelled (and
+   ffmpeg killed) if no `-progress` line arrives for 5 minutes, so a hung device init,
+   a stalled read, or a special file that never returns can't block the worker — and,
+   at the default `MAX_CONCURRENT_JOBS=1`, the whole engine — forever. On exit: a
+   worker-token cancellation (shutdown) marks the job `Cancelled` (a normal shutdown is
+   not a job failure); a watchdog kill → `Failed` + `JobFailed`; a set `CancelRequested`
+   → `Cancelled`; exit code `0` → the temp file is atomically **renamed onto the real
+   output** (replacing any existing file) → `Completed` + `JobCompleted`; any other exit
+   → `Failed` + `JobFailed` (logged with the stderr tail). A blocking `WaitForExit()`
+   after the async wait drains the output callbacks so that tail is complete.
+6. **Clean up.** The process reference is dropped (so a later cancel/shutdown kill is a
+   no-op, never touching a disposed object), and a **cancelled or failed** job's temp
+   file is deleted. Because the encode only ever writes the temp file, a failed,
+   cancelled, or interrupted job **never touches a pre-existing file at the output
+   path** — the destination is replaced only by a rename on success.
 
 `Dispose` is made idempotent with an `Interlocked.Exchange` on the CTS, because the
 one instance is registered three ways and the DI container can dispose it more than
@@ -113,7 +134,8 @@ argument list as:
   endpoint already rejects one, but `AddDefaultDisposition` stays correct in
   isolation so a stray index never clears every default).
 - **Progress:** `-progress pipe:1 -nostats` (structured key/value progress on stdout),
-  then the output path.
+  then the temp output path (renamed onto the real output on a clean exit — see
+  [Running a job](#running-a-job)).
 
 ### Why subtitles are Matroska-only
 

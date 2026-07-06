@@ -21,14 +21,14 @@
       "runtimes": {
         "docker": {
           "type": "docker",
-          "image": { "repository": "ghcr.io/alex-de-haas/transcode-engine", "tag": "latest", "pullPolicy": "always" },
+          "image": { "repository": "ghcr.io/alex-de-haas/transcode-engine", "tag": "latest" },
           "ports": [
             { "key": "control", "containerPort": 8080, "protocol": "http" }
           ]
         },
         "docker-vaapi": {
           "type": "docker",
-          "image": { "repository": "ghcr.io/alex-de-haas/transcode-engine", "tag": "latest", "pullPolicy": "always" },
+          "image": { "repository": "ghcr.io/alex-de-haas/transcode-engine", "tag": "latest" },
           "devices": ["/dev/dri"],
           "ports": [
             { "key": "control", "containerPort": 8080, "protocol": "http" }

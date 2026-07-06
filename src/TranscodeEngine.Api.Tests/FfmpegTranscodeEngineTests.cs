@@ -49,6 +49,27 @@ public sealed class FfmpegTranscodeEngineTests
     }
 
     [Fact]
+    public void BuildArguments_WritesToDestinationPath_WhenProvided()
+    {
+        // The engine encodes to a temp path and renames it onto the real output only on success, so
+        // BuildArguments must target that destination — while the muxer/subtitle decision still keys off
+        // the real (.mkv) output.
+        const string temp = "/out/.movie - HEVC.job-1.part.mkv";
+        var args = Engine().BuildArguments(Job("/out/movie - HEVC.mkv"), TranscodeHardware.None, temp);
+
+        Assert.Equal(temp, args[^1]);
+        Assert.Contains("0:s?", MapTargets(args));
+    }
+
+    [Fact]
+    public void BuildArguments_DefaultsDestinationToRequestOutput()
+    {
+        var args = Engine().BuildArguments(Job("/out/movie - HEVC.mkv"), TranscodeHardware.None);
+
+        Assert.Equal("/out/movie - HEVC.mkv", args[^1]);
+    }
+
+    [Fact]
     public void BuildArguments_MapsPrimaryVideoAndAllAudio()
     {
         var args = Engine().BuildArguments(Job("/out/movie - HEVC.mkv"), TranscodeHardware.None);
@@ -162,5 +183,70 @@ public sealed class FfmpegTranscodeEngineTests
         var args = Engine().BuildArguments(JobWith(audio: new[] { 1, 4 }, defaultAudio: 9), TranscodeHardware.None);
 
         Assert.DoesNotContain(args, arg => arg.StartsWith("-disposition:", StringComparison.Ordinal));
+    }
+
+    // ---- Interrupted-wait classification (cancel vs shutdown vs watchdog) ----
+
+    [Theory]
+    [InlineData(true, false, JobState.Cancelled)]  // user cancel
+    [InlineData(false, true, JobState.Cancelled)]  // engine shutdown
+    [InlineData(true, true, JobState.Cancelled)]   // cancel racing shutdown
+    [InlineData(false, false, JobState.Failed)]    // genuine no-progress watchdog trip
+    public void ClassifyInterruptedWait_CancelOrShutdownIsCancelled_OnlyBareWaitIsWatchdogFailure(
+        bool cancelRequested, bool shutdownRequested, JobState expected)
+    {
+        // A user cancel must report Cancelled even when the watchdog token is what actually fired (a
+        // killed-but-slow-to-exit ffmpeg still emits no progress).
+        Assert.Equal(expected, FfmpegTranscodeEngine.ClassifyInterruptedWait(cancelRequested, shutdownRequested));
+    }
+
+    // ---- Terminal-job retention policy ----
+
+    [Fact]
+    public void SelectTerminalJobsToEvict_EvictsJobsOlderThanRetention()
+    {
+        var now = DateTimeOffset.UnixEpoch.AddHours(10);
+        var retention = TimeSpan.FromHours(1);
+        (string, DateTimeOffset?)[] jobs =
+        [
+            ("old", now - TimeSpan.FromHours(2)),
+            ("fresh", now - TimeSpan.FromMinutes(30)),
+            ("edge", now - retention), // exactly at retention → not strictly older → kept
+        ];
+
+        var evicted = FfmpegTranscodeEngine.SelectTerminalJobsToEvict(jobs, now, retention, maxRetained: 100);
+
+        Assert.Equal(["old"], evicted);
+    }
+
+    [Fact]
+    public void SelectTerminalJobsToEvict_CapsRetainedCount_DroppingOldestFirst()
+    {
+        var now = DateTimeOffset.UnixEpoch.AddHours(10);
+        (string, DateTimeOffset?)[] jobs =
+        [
+            ("a", now - TimeSpan.FromMinutes(4)),
+            ("b", now - TimeSpan.FromMinutes(3)),
+            ("c", now - TimeSpan.FromMinutes(2)),
+            ("d", now - TimeSpan.FromMinutes(1)),
+        ];
+
+        // All within retention, but the cap is 2 → the two oldest are evicted, newest kept.
+        var evicted = FfmpegTranscodeEngine.SelectTerminalJobsToEvict(jobs, now, TimeSpan.FromHours(1), maxRetained: 2);
+
+        Assert.Equal(["a", "b"], evicted);
+    }
+
+    [Fact]
+    public void SelectTerminalJobsToEvict_KeepsEverythingWithinRetentionAndCap()
+    {
+        var now = DateTimeOffset.UnixEpoch.AddHours(10);
+        (string, DateTimeOffset?)[] jobs =
+        [
+            ("a", now - TimeSpan.FromMinutes(2)),
+            ("b", now),
+        ];
+
+        Assert.Empty(FfmpegTranscodeEngine.SelectTerminalJobsToEvict(jobs, now, TimeSpan.FromHours(1), maxRetained: 10));
     }
 }
