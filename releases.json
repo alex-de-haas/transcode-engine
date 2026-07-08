@@ -2,7 +2,7 @@
   "versions": [
     {
       "version": "0.4.0",
-      "manifestRef": "https://raw.githubusercontent.com/alex-de-haas/transcode-engine/main/manifest.json"
+      "manifestRef": "https://raw.githubusercontent.com/alex-de-haas/transcode-engine/dc46366b3f4639f08ffab060ad3708995f609436/manifest.json"
     }
   ],
   "tags": {
