@@ -64,5 +64,22 @@
     { "key": "MAX_CONCURRENT_JOBS", "type": "number", "default": "1", "label": "Max concurrent jobs", "description": "How many transcode jobs run at once. Defaults to 1 — hardware encoders have limited sessions. Floored at 1." }
   ],
   "telemetry": { "enabled": true, "sampleRatio": 0.1 },
-  "capabilities": ["update", "restart", "stop", "remove", "backup", "restore", "logs"]
+  "capabilities": ["update", "restart", "stop", "remove", "backup", "restore", "logs"],
+  "catalogMetadata": {
+    "publisher": {
+      "name": "Haas",
+      "url": "https://github.com/alex-de-haas",
+      "email": "a.zayats@outlook.com"
+    },
+    "category": "Media",
+    "tags": ["transcode", "ffmpeg", "video", "hardware-acceleration", "engine"],
+    "icon": "assets/icon.svg",
+    "license": "AGPL-3.0-only",
+    "links": {
+      "website": "https://github.com/alex-de-haas/transcode-engine",
+      "docs": "https://github.com/alex-de-haas/transcode-engine/blob/main/docs/root.md"
+    },
+    "summary": "ffmpeg-backed batch transcoder with hardware acceleration and an HTTP/SSE control API.",
+    "descriptionFile": "docs/store.md"
+  }
 }

@@ -1,0 +1,11 @@
+{
+  "versions": [
+    {
+      "version": "0.4.0",
+      "manifestRef": "https://raw.githubusercontent.com/alex-de-haas/transcode-engine/main/manifest.json"
+    }
+  ],
+  "tags": {
+    "stable": "0.4.0"
+  }
+}
