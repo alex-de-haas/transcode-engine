@@ -3,7 +3,7 @@
   "id": "com.haas.transcode-engine",
   "name": "Transcode Engine",
   "description": "ffmpeg-backed batch transcoder with VAAPI/VideoToolbox hardware acceleration and an HTTP/SSE control API, for other Hosty apps to drive re-encoding jobs over a dependency.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "source": {
     "type": "git",
     "repository": "https://github.com/alex-de-haas/transcode-engine.git",
@@ -64,7 +64,7 @@
     { "key": "MAX_CONCURRENT_JOBS", "type": "number", "default": "1", "label": "Max concurrent jobs", "description": "How many transcode jobs run at once. Defaults to 1 — hardware encoders have limited sessions. Floored at 1." }
   ],
   "telemetry": { "enabled": true, "sampleRatio": 0.1 },
-  "capabilities": ["update", "restart", "stop", "remove", "backup", "restore", "logs"],
+  "capabilities": ["backup", "logs"],
   "catalogMetadata": {
     "publisher": {
       "name": "Haas",
