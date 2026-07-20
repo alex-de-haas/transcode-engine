@@ -2,7 +2,7 @@
 
 Status: Implemented
 Created: 2026-07-03
-Updated: 2026-07-06
+Updated: 2026-07-20
 
 ## Description
 
@@ -112,8 +112,11 @@ argument list as:
 - **Base:** `-hide_banner -nostdin -y`.
 - **Hardware decode setup** (only when re-encoding — a video copy never touches the
   GPU): VAAPI adds `-vaapi_device <device>`; AMF adds `-hwaccel d3d11va
-  -hwaccel_output_format nv12` (hardware-decode on the AMD VCN, then download the
-  frames to system memory so the `*_amf` encoders accept them).
+  -hwaccel_output_format d3d11` (hardware-decode on the AMD VCN, keeping the surfaces
+  on the GPU — the filter chain then downloads them with `hwdownload` so the `*_amf`
+  encoders get the system-memory frames they accept). The download format is
+  deliberately *not* pinned at the decoder: that transfer cannot convert, so pinning
+  `nv12` failed with `-22` on every 10-bit (P010) source.
 - **Input:** `-i <inputPath>`.
 - **Stream maps:** the primary video only — `0:v:0`, never a bare `0:v` (which would
   also grab attached cover-art "video" streams the hardware encoders reject) — then
