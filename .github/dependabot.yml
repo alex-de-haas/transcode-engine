@@ -1,0 +1,37 @@
+# Keeps dependencies current and surfaces security advisories across every ecosystem here:
+# the .NET control API (nuget), the Dockerfile, and the CI actions.
+#
+# Grouping policy for the package ecosystem (nuget): minor and patch bumps arrive as one
+# weekly PR so routine churn costs a single review, while majors arrive individually
+# because each needs its own judgement call and must not block the rest of the group.
+# Actions group wholesale, majors included -- an action major is normally a mechanical
+# `@v4 -> @v5` bump rather than a migration.
+#
+# No Hosty SDK group here, unlike the consumer apps: this engine is headless and its control
+# port is loopback-published, so it has no user-facing session to authenticate and does not
+# depend on HostySdk.App. Add one if that ever changes.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: nuget
+    directories:
+      - /src/TranscodeEngine.Api
+      - /src/TranscodeEngine.Api.Tests
+    schedule:
+      interval: weekly
+    groups:
+      nuget:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
