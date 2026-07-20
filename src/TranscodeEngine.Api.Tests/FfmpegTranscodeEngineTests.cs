@@ -157,6 +157,27 @@ public sealed class FfmpegTranscodeEngineTests
     }
 
     [Fact]
+    public void BuildArguments_Amf_DownloadsSurfacesWithoutPinningTheDecodeFormat()
+    {
+        // Regression: pinning -hwaccel_output_format to nv12 made the decoder-side transfer fail with EINVAL
+        // on every 10-bit source (its surfaces are P010, and that transfer cannot convert). The decode must
+        // stay on d3d11 and the download must accept both depths.
+        var args = Engine().BuildArguments(JobWith(), TranscodeHardware.Amf);
+
+        Assert.Equal("d3d11", ValueAfter(args, "-hwaccel_output_format"));
+        Assert.Equal("hwdownload,format=nv12|p010", ValueAfter(args, "-vf"));
+        Assert.Equal("hevc_amf", ValueAfter(args, "-c:v"));
+    }
+
+    [Fact]
+    public void BuildArguments_MaxHeight_Amf_ScalesAfterTheDownload()
+    {
+        var args = Engine().BuildArguments(JobWith(maxHeight: 1080), TranscodeHardware.Amf);
+
+        Assert.Equal("hwdownload,format=nv12|p010,scale=-2:1080", ValueAfter(args, "-vf"));
+    }
+
+    [Fact]
     public void BuildArguments_DefaultAudio_SetsDispositionByOutputPosition()
     {
         var args = Engine().BuildArguments(JobWith(audio: new[] { 1, 4, 6 }, defaultAudio: 4), TranscodeHardware.None);

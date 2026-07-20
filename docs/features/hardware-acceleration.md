@@ -2,7 +2,7 @@
 
 Status: Implemented
 Created: 2026-07-03
-Updated: 2026-07-03
+Updated: 2026-07-20
 
 ## Description
 
@@ -87,7 +87,7 @@ encoder and wires the right scaler for an optional `maxHeight` downscale:
 | --- | --- | --- | --- |
 | VAAPI | `h264_vaapi` | `hevc_vaapi` | Software-decode → `format=nv12,hwupload` → `scale_vaapi` on the GPU. The proven chain, most compatible across arbitrary inputs. |
 | VideoToolbox | `h264_videotoolbox` | `hevc_videotoolbox` | System-memory frames; CPU `scale=-2:H`. |
-| AMF | `h264_amf` | `hevc_amf` | D3D11VA hardware-decode → `nv12` download → CPU `scale=-2:H`. |
+| AMF | `h264_amf` | `hevc_amf` | D3D11VA hardware-decode → `hwdownload,format=nv12\|p010` → CPU `scale=-2:H`. |
 | Software | `libx264` | `libx265` | CPU decode + `scale=-2:H`; honours `crf`. |
 
 The VAAPI path keeps scaling on the GPU (`scale_vaapi=w=-2:h=H` inside the hwupload

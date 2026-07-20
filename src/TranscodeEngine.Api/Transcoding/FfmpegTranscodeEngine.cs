@@ -435,9 +435,10 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
     /// <summary>Builds the ffmpeg argument list. The video is either copied (remux) or re-encoded: VAAPI uses
     /// the proven software-decode → <c>hwupload</c> → hardware-encode chain (most compatible across arbitrary
     /// inputs); VideoToolbox (native macOS) maps straight to the platform encoder; AMF (native Windows + AMD)
-    /// hardware-decodes on the VCN via D3D11VA and hardware-encodes with the <c>*_amf</c> encoders; software
-    /// uses libx264/libx265 with an optional CRF. An optional downscale is applied with the GPU scaler on
-    /// VAAPI and the CPU <c>scale</c> filter elsewhere. Audio and (for Matroska outputs) subtitle/attachment
+    /// hardware-decodes on the VCN via D3D11VA, downloads the surfaces with <c>hwdownload</c>, and
+    /// hardware-encodes with the <c>*_amf</c> encoders; software uses libx264/libx265 with an optional CRF.
+    /// An optional downscale is applied with the GPU scaler on VAAPI and the CPU <c>scale</c> filter
+    /// elsewhere. Audio and (for Matroska outputs) subtitle/attachment
     /// streams are copied — all of them, or the explicitly selected subset — so nothing is silently dropped.</summary>
     internal List<string> BuildArguments(TranscodeJob job, TranscodeHardware hardware, string? destinationPath = null)
     {
@@ -457,14 +458,18 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
             }
             else if (hardware == TranscodeHardware.Amf)
             {
-                // Hardware-decode on the AMD VCN (D3D11VA), then hand the AMF encoder system-memory frames. The
-                // explicit nv12 output format forces ffmpeg to download the decoded surfaces off the GPU —
-                // without it the decoder keeps d3d11 surfaces that the *_amf encoders reject (format mismatch).
-                // The system-memory hand-off (no fragile full-GPU surface chain) also keeps arbitrary inputs working.
+                // Hardware-decode on the AMD VCN (D3D11VA) and keep the decoded surfaces on the GPU; the filter
+                // chain downloads them explicitly with hwdownload, so the *_amf encoders still get the
+                // system-memory frames they want (no fragile full-GPU surface hand-off).
+                //
+                // The download format must NOT be pinned here (-hwaccel_output_format nv12): the decoder-side
+                // transfer is av_hwframe_transfer_data, which only downloads — it cannot convert. A 10-bit
+                // source decodes to a P010 surface, so asking for nv12 fails with EINVAL ("Failed to transfer
+                // data to output frame: -22") and the job dies before a single frame is encoded.
                 args.Add("-hwaccel");
                 args.Add("d3d11va");
                 args.Add("-hwaccel_output_format");
-                args.Add("nv12");
+                args.Add("d3d11");
             }
         }
 
@@ -563,7 +568,14 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
                 args.Add(VideoToolboxEncoder(request.VideoCodec));
                 break;
             case TranscodeHardware.Amf:
-                AddCpuScale(args, height);
+                // hwdownload can only emit the surface's own software format, so both the 8-bit (nv12) and
+                // 10-bit (p010) cases are listed — it picks whichever the decoded frames actually carry.
+                // ffmpeg then auto-converts to a format the encoder advertises: hevc_amf takes p010 straight
+                // through (10-bit preserved), h264_amf is 8-bit only and gets an inserted nv12 conversion.
+                args.Add("-vf");
+                args.Add(height is { } amfHeight
+                    ? $"hwdownload,format=nv12|p010,scale=-2:{amfHeight.ToString(CultureInfo.InvariantCulture)}"
+                    : "hwdownload,format=nv12|p010");
                 args.Add("-c:v");
                 args.Add(AmfEncoder(request.VideoCodec));
                 break;
