@@ -435,7 +435,7 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
     /// <summary>Builds the ffmpeg argument list. The video is either copied (remux) or re-encoded: VAAPI uses
     /// the proven software-decode → <c>hwupload</c> → hardware-encode chain (most compatible across arbitrary
     /// inputs); VideoToolbox (native macOS) maps straight to the platform encoder; AMF (native Windows + AMD)
-    /// hardware-decodes on the VCN via D3D11VA, downloads the surfaces with <c>hwdownload</c>, and
+    /// hardware-decodes on the VCN via D3D11VA (the decoder downloads the surfaces to system memory) and
     /// hardware-encodes with the <c>*_amf</c> encoders; software uses libx264/libx265 with an optional CRF.
     /// An optional downscale is applied with the GPU scaler on VAAPI and the CPU <c>scale</c> filter
     /// elsewhere. Audio and (for Matroska outputs) subtitle/attachment
@@ -458,18 +458,24 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
             }
             else if (hardware == TranscodeHardware.Amf)
             {
-                // Hardware-decode on the AMD VCN (D3D11VA) and keep the decoded surfaces on the GPU; the filter
-                // chain downloads them explicitly with hwdownload, so the *_amf encoders still get the
-                // system-memory frames they want (no fragile full-GPU surface hand-off).
+                // Hardware-decode on the AMD VCN (D3D11VA); the *_amf encoders want system-memory frames, so
+                // the decoded surfaces have to come back off the GPU.
                 //
-                // The download format must NOT be pinned here (-hwaccel_output_format nv12): the decoder-side
-                // transfer is av_hwframe_transfer_data, which only downloads — it cannot convert. A 10-bit
-                // source decodes to a P010 surface, so asking for nv12 fails with EINVAL ("Failed to transfer
-                // data to output frame: -22") and the job dies before a single frame is encoded.
+                // -hwaccel_output_format is deliberately left unset. That is the only setting where ffmpeg
+                // downloads each surface into *its own* software format: the transfer is
+                // av_hwframe_transfer_data, which copies but cannot convert, and with no format requested it
+                // takes the first format the surface offers (its sw_format — nv12 for 8-bit, p010 for 10-bit).
+                // Both alternatives break on one depth or the other:
+                //   * nv12  — pins the transfer to nv12, so every 10-bit (P010) source dies with EINVAL
+                //             ("Failed to transfer data to output frame: -22").
+                //   * d3d11 — keeps the surfaces on the GPU and needs an hwdownload filter, but the filter
+                //             graph negotiates its format up front, before it can know what the frames carry;
+                //             even `hwdownload,format=nv12|p010` settles on the first candidate and 10-bit
+                //             sources die with "Invalid output format nv12 for hwframe download".
+                // ffmpeg then converts to whatever the encoder advertises: hevc_amf takes p010 straight
+                // through (10-bit preserved), h264_amf is 8-bit only and gets an inserted nv12 conversion.
                 args.Add("-hwaccel");
                 args.Add("d3d11va");
-                args.Add("-hwaccel_output_format");
-                args.Add("d3d11");
             }
         }
 
@@ -568,14 +574,9 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
                 args.Add(VideoToolboxEncoder(request.VideoCodec));
                 break;
             case TranscodeHardware.Amf:
-                // hwdownload can only emit the surface's own software format, so both the 8-bit (nv12) and
-                // 10-bit (p010) cases are listed — it picks whichever the decoded frames actually carry.
-                // ffmpeg then auto-converts to a format the encoder advertises: hevc_amf takes p010 straight
-                // through (10-bit preserved), h264_amf is 8-bit only and gets an inserted nv12 conversion.
-                args.Add("-vf");
-                args.Add(height is { } amfHeight
-                    ? $"hwdownload,format=nv12|p010,scale=-2:{amfHeight.ToString(CultureInfo.InvariantCulture)}"
-                    : "hwdownload,format=nv12|p010");
+                // The decoder already hands back system-memory frames (see the -hwaccel setup), so no
+                // hwdownload filter — just the optional CPU downscale.
+                AddCpuScale(args, height);
                 args.Add("-c:v");
                 args.Add(AmfEncoder(request.VideoCodec));
                 break;

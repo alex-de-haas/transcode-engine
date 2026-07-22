@@ -157,24 +157,28 @@ public sealed class FfmpegTranscodeEngineTests
     }
 
     [Fact]
-    public void BuildArguments_Amf_DownloadsSurfacesWithoutPinningTheDecodeFormat()
+    public void BuildArguments_Amf_LeavesTheDecodeOutputFormatUnset()
     {
-        // Regression: pinning -hwaccel_output_format to nv12 made the decoder-side transfer fail with EINVAL
-        // on every 10-bit source (its surfaces are P010, and that transfer cannot convert). The decode must
-        // stay on d3d11 and the download must accept both depths.
+        // Regression: naming any -hwaccel_output_format breaks one depth or the other. "nv12" pins the
+        // decoder-side transfer (which copies but cannot convert), so 10-bit P010 surfaces fail with EINVAL;
+        // "d3d11" keeps them on the GPU and needs an hwdownload filter, whose format the graph negotiates
+        // before the frames are known, so 10-bit fails with "Invalid output format nv12 for hwframe
+        // download". Unset downloads each surface into its own software format — the only variant that
+        // handles both depths.
         var args = Engine().BuildArguments(JobWith(), TranscodeHardware.Amf);
 
-        Assert.Equal("d3d11", ValueAfter(args, "-hwaccel_output_format"));
-        Assert.Equal("hwdownload,format=nv12|p010", ValueAfter(args, "-vf"));
+        Assert.Equal("d3d11va", ValueAfter(args, "-hwaccel"));
+        Assert.DoesNotContain("-hwaccel_output_format", args);
+        Assert.DoesNotContain("-vf", args);
         Assert.Equal("hevc_amf", ValueAfter(args, "-c:v"));
     }
 
     [Fact]
-    public void BuildArguments_MaxHeight_Amf_ScalesAfterTheDownload()
+    public void BuildArguments_MaxHeight_Amf_ScalesOnTheCpu()
     {
         var args = Engine().BuildArguments(JobWith(maxHeight: 1080), TranscodeHardware.Amf);
 
-        Assert.Equal("hwdownload,format=nv12|p010,scale=-2:1080", ValueAfter(args, "-vf"));
+        Assert.Equal("scale=-2:1080", ValueAfter(args, "-vf"));
     }
 
     [Fact]
