@@ -11,7 +11,9 @@ change ships, bump the app version in the **same commit**:
   changes for the app's users.
 
 Documentation-only changes (`docs/`, `README.md`, `AGENTS.md`) are the exception —
-merge them without a version bump.
+merge them without a version bump. The same goes for Dependabot PRs: merge them
+as-is, without adding a version bump; the updated dependencies ship with the
+next versioned change.
 
 Where the version lives:
 
