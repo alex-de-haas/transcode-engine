@@ -31,16 +31,84 @@ Each runtime app versions independently from Hosty Core/CLI and from the other a
   implement all phases on one branch and open a single PR. Individual phases rarely
   deliver complete functionality on their own, and under the versioning rules above
   each per-phase PR would pointlessly bump the version.
+- **PR descriptions track the plan.** When the work is driven by a `plan.md`, the
+  description lists the deliverables this PR completes and links the feature
+  folder. Always state the version outcome ("0.4.2 → 0.5.0" or "No version
+  change — documentation-only").
 
 ## Documentation
-- Planning and reference docs live in [`docs/`](docs/root.md); start at
-  `docs/root.md`. Each subsystem has a feature doc under `docs/features/`.
-- A feature doc opens with a `Status:` / `Created:` / `Updated:` header, then a
-  `## Description`, and ends with `## Testing Expectations`. Keep it in sync with the
-  code it documents.
-- When a feature finishes development, update its doc's `Status:` (and the `Updated:`
-  date) in the same PR that ships the work — a shipped feature must not stay marked
-  as planned or in progress.
+
+Development is document-driven: every non-trivial change starts and ends in `docs/`.
+
+### Layout
+
+```text
+docs/
+├── root.md              — prose overview + generated status index
+└── features/
+    └── <feature-name>/  — kebab-case; the feature's stable, permanent home
+        ├── feature.md   — current reality only
+        └── plan.md      — remaining work only
+```
+
+- There are no other documentation folders. A large or cross-cutting feature is
+  an ordinary feature whose docs cross-link the features it spans; its `plan.md`
+  never duplicates their deliverables — it links to them and keeps only the work
+  that belongs to the umbrella itself.
+- Migration is lazy: legacy flat docs (`docs/features/*.md`, `docs/ideas/`,
+  `docs/planning/`) move into feature folders with `git mv` whenever work
+  touches them; never in bulk.
+
+### feature.md — reality
+
+- Describes current behavior only: present tense, verifiable against the code.
+  Words like "will", "planned", or "future" do not belong here — that content
+  goes to `plan.md`.
+- Created in the PR that first ships behavior, never earlier. When
+  implementation diverges from the plan, this file follows the code.
+- Starts with `Created:` / `Updated:` lines (no `Status:`), ends with a
+  `## Testing Expectations` section for required coverage.
+
+### plan.md — intent
+
+- The single artifact for unbuilt work, from first idea to last deliverable:
+  goal, target behavior (written as a diff against `feature.md` when the
+  feature already exists), deliverables checklist, phases, open questions,
+  verification steps.
+- Starts with `Status:` / `Created:` / `Updated:`. Statuses:
+  - **Draft** — being shaped; open questions allowed.
+  - **On Hold** — deliberately parked.
+  - **Ready** — no open questions left; set only after explicit user approval
+    in chat, never on the agent's own judgment.
+  - **In Progress** — implementation started.
+  - **Blocked** — cannot proceed; the blocker is recorded in the document.
+- Never implement a plan that is not Ready. A plan the user abandons is deleted
+  (git history preserves it) — there is no Rejected status.
+- Trivial work (bug fixes, small refactors, doc edits) needs no `plan.md`:
+  ship it and update `feature.md` in the same PR. If mid-work the change turns
+  out to be larger than expected, stop and write the plan.
+
+### Status discipline
+
+Statuses and checkboxes change in the same commit as the work they describe:
+
+- the first implementation commit sets `Status: In Progress`;
+- the commit that completes a deliverable checks it off;
+- the PR that completes the last deliverable also updates `feature.md`, deletes
+  `plan.md`, and regenerates the index — completion is never deferred to a
+  later PR, and scope is never silently narrowed to force completion.
+
+Unfinished work exists only as unchecked deliverables — never hidden in notes,
+"future work" sections, or follow-up remarks. Bump `Updated:` on every
+meaningful change to a document.
+
+### Index
+
+`docs/root.md` holds the prose overview plus a generated per-feature status
+index. `node scripts/docs-index.mjs --fix` rewrites the block between the
+`docs-index` markers (and validates headers); `--check` is the CI mode. Never
+edit the generated block by hand; regenerate it in any change that adds,
+renames, deletes, or changes the status of a doc.
 
 ## Unit Testing
 - Use `xUnit` for backend unit tests.
