@@ -10,6 +10,9 @@ change ships, bump the app version in the **same commit**:
 - **major** — reserved until the app declares a stable `1.0.0`; after that, breaking
   changes for the app's users.
 
+Documentation-only changes (`docs/`, `README.md`, `AGENTS.md`) are the exception —
+merge them without a version bump.
+
 Where the version lives:
 
 - `version` in `manifest.json` is the app's release version and the source of truth —
@@ -35,6 +38,9 @@ Each runtime app versions independently from Hosty Core/CLI and from the other a
 - A feature doc opens with a `Status:` / `Created:` / `Updated:` header, then a
   `## Description`, and ends with `## Testing Expectations`. Keep it in sync with the
   code it documents.
+- When a feature finishes development, update its doc's `Status:` (and the `Updated:`
+  date) in the same PR that ships the work — a shipped feature must not stay marked
+  as planned or in progress.
 
 ## Unit Testing
 - Use `xUnit` for backend unit tests.
