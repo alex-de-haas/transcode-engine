@@ -30,3 +30,17 @@ jobs:
 
       - name: Test
         run: dotnet test src/TranscodeEngine.Api.Tests/TranscodeEngine.Api.Tests.csproj --configuration Release
+
+  docs:
+    name: docs index
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Check docs index and headers
+        run: node scripts/docs-index.mjs --check
