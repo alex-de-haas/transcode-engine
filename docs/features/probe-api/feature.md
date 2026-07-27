@@ -47,6 +47,11 @@ per file.
 }
 ```
 
+Enums cross the wire **by name** — `"Video"`, `"Hdr10"` — carried by the contract
+types themselves rather than by a host's serializer configuration, so the promise
+holds wherever they are serialized. Ordinals would also make reordering a member a
+silent breaking change for anyone already deployed.
+
 `container` is the file's extension, not `ffprobe`'s `format_name` — that field is
 the demuxer's format list (`matroska,webm`), which names a family rather than a
 container.
@@ -109,4 +114,5 @@ result.
   real endpoint wiring with a mocked inspector: unknown label, missing file, empty
   path, a path escaping its mount, a successful probe returning the normalized
   description, and a file that is not media answering 400 rather than an empty
-  result.
+  result. Plus the wire format, asserted on the **raw body**: reading the response
+  back into `ProbeResponse` would round-trip an ordinal happily and prove nothing.

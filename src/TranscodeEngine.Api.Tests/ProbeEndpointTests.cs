@@ -131,5 +131,27 @@ public sealed class ProbeEndpointTests
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
+    [Fact]
+    public async Task Enums_cross_the_wire_by_name()
+    {
+        // Asserted on the raw body on purpose. Reading the response back into ProbeResponse would round-trip
+        // an ordinal happily and prove nothing: a consumer codes against the documented vocabulary, and
+        // numbers would also make reordering a member a silent breaking change for anyone deployed.
+        var media = Directory.CreateTempSubdirectory("te-media").FullName;
+        await File.WriteAllTextAsync(Path.Combine(media, "in.mkv"), "x");
+        var imposter = IMediaInspector.Imposter();
+        imposter.InspectAsync(Arg<string>.Any(), Arg<CancellationToken>.Any())
+            .Returns(Task.FromResult<ProbeResponse?>(Probe));
+        var (client, app) = await HostAsync(Settings($"media={media}"), imposter.Instance());
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync("/probe", new { mountLabel = "media", path = "in.mkv" });
+        var raw = await response.Content.ReadAsStringAsync();
+
+        Assert.Contains("\"kind\":\"Video\"", raw);
+        Assert.Contains("\"hdr\":\"Hdr10\"", raw);
+        Assert.DoesNotContain("\"kind\":0", raw);
+    }
+
     private sealed record ErrorBody(string Error);
 }

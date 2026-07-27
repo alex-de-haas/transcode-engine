@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace TranscodeEngine.Api.Probing;
 
 /// <summary>
@@ -8,6 +10,7 @@ namespace TranscodeEngine.Api.Probing;
 public sealed record ProbeRequest(string? MountLabel, string Path);
 
 /// <summary>The kind of a stream, in the vocabulary this API owns rather than ffprobe's.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<ProbedStreamKind>))]
 public enum ProbedStreamKind
 {
     Video,
@@ -24,6 +27,7 @@ public enum ProbedStreamKind
 /// would let a consumer's weaker fallback provider assert something it never determined. This app answers
 /// from ffprobe and should never need <see cref="Unknown"/>.
 /// </summary>
+[JsonConverter(typeof(JsonStringEnumConverter<HdrFormat>))]
 public enum HdrFormat
 {
     Unknown,

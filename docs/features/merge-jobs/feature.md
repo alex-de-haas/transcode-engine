@@ -75,9 +75,18 @@ output is refused rather than silently dropped.
 Overrides apply to **any** job, a plain transcode as well as a merge.
 
 A field left `null` is not written at all, so the source stream's own tag survives:
-relabelling one track never freezes the others' metadata. An override must name a
-stream the job maps explicitly, and must set at least one of the two values;
-neither is a silent no-op.
+relabelling one track never freezes the others' metadata. Nothing here is allowed
+to be a silent no-op, so an override is refused when it:
+
+- sets neither value — including when both are empty or whitespace, which argument
+  construction would skip;
+- names a stream the job does not map explicitly;
+- repeats a stream another override already names, since only one could be applied;
+- targets an **appended** track while the primary selection of that type is left
+  implicit. A null selection is one "copy every stream of this type" mapping that
+  expands to however many the file holds, so the appended track's output position
+  is not knowable here — and writing against the assumed one would relabel a
+  primary track instead.
 
 ## Progress
 
@@ -108,5 +117,6 @@ stays absent, which the snapshot already tolerates.
 - `TranscodeJobEndpointTests` — validation: an additional input selecting no
   streams, a missing additional input, an encode-only knob on a merge, an override
   of an unmapped stream, an override naming an input the job does not have, an
-  empty override, and an accepted merge reaching the engine as a copy with its
-  resolved paths.
+  empty override, one carrying only whitespace, two overrides for one stream, an
+  override on an appended track without an explicit primary list, and an accepted
+  merge reaching the engine as a copy with its resolved paths.

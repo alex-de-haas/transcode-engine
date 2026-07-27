@@ -317,9 +317,13 @@ public static class TranscodeEndpoints
         IReadOnlyList<AdditionalInputRequest> additionalInputs,
         bool matroskaOutput)
     {
-        foreach (var entry in request.MetadataOverrides ?? [])
+        var overrides = request.MetadataOverrides ?? [];
+        var seen = new HashSet<(int Input, int StreamIndex)>();
+        foreach (var entry in overrides)
         {
-            if (entry.Language is null && entry.Title is null)
+            // Whitespace is not a value: argument construction emits a field only when it has content, so
+            // accepting "" here would report success for a job that changes nothing.
+            if (string.IsNullOrWhiteSpace(entry.Language) && string.IsNullOrWhiteSpace(entry.Title))
             {
                 return "a metadata override must set a language or a title.";
             }
@@ -334,15 +338,39 @@ public static class TranscodeEndpoints
                 return "stream indexes must be non-negative.";
             }
 
+            // Two overrides for one stream cannot both be applied, and picking one silently would discard
+            // the caller's other instruction.
+            if (!seen.Add((entry.Input, entry.StreamIndex)))
+            {
+                return $"stream {entry.StreamIndex} of input {entry.Input} has more than one metadata override.";
+            }
+
             var (audio, subtitles) = entry.Input == 0
                 ? (request.AudioStreamIndexes, request.SubtitleStreamIndexes)
                 : (additionalInputs[entry.Input - 1].AudioStreamIndexes, additionalInputs[entry.Input - 1].SubtitleStreamIndexes);
 
-            var mapped = audio?.Contains(entry.StreamIndex) == true ||
-                (matroskaOutput && subtitles?.Contains(entry.StreamIndex) == true);
-            if (!mapped)
+            var isAudio = audio?.Contains(entry.StreamIndex) == true;
+            var isSubtitle = matroskaOutput && subtitles?.Contains(entry.StreamIndex) == true;
+            if (!isAudio && !isSubtitle)
             {
                 return $"metadata override for stream {entry.StreamIndex} of input {entry.Input} must name a stream the job maps explicitly.";
+            }
+
+            // Output positions are assigned in map order, and a null primary selection is a single "copy
+            // every stream of this type" mapping that expands to however many the file holds. An appended
+            // track sitting after it therefore has no position this app can compute, and writing metadata
+            // against the assumed one would relabel a primary track instead.
+            if (entry.Input > 0)
+            {
+                if (isAudio && request.AudioStreamIndexes is null)
+                {
+                    return "audioStreamIndexes must be listed explicitly when a metadata override targets an appended audio track.";
+                }
+
+                if (isSubtitle && request.SubtitleStreamIndexes is null)
+                {
+                    return "subtitleStreamIndexes must be listed explicitly when a metadata override targets an appended subtitle track.";
+                }
             }
         }
 

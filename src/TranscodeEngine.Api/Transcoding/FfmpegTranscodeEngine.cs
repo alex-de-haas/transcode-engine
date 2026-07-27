@@ -697,6 +697,8 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
             }
 
             var input = mapped[position].Input;
+            // At most one override per stream: the endpoint rejects duplicates, so there is nothing to
+            // choose between here and no instruction of the caller's is silently dropped.
             var match = overrides.FirstOrDefault(o => o.Input == input && o.StreamIndex == index);
             if (match is null)
             {
