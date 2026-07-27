@@ -482,17 +482,34 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         args.Add("-i");
         args.Add(request.InputPath);
 
+        // A merge names further files whose streams join the output; their ffmpeg input ordinals follow the
+        // primary's, so the first additional input is 1.
+        var additional = request.AdditionalInputs ?? [];
+        foreach (var input in additional)
+        {
+            args.Add("-i");
+            args.Add(input.Path);
+        }
+
         // Map the primary video stream (0:v:0, never a bare 0:v — that would also grab attached cover-art
         // "video" streams the hardware encoders reject), then the selected audio and subtitle streams.
         args.Add("-map");
         args.Add("0:v:0");
-        AddStreamMaps(args, "a", request.AudioStreamIndexes);
 
         // Subtitles (and the attachment fonts that ASS subs render with) only when the output is Matroska:
         // mkv carries any subtitle/attachment codec, so a stream copy always works. Other containers (e.g.
         // mp4) reject most subtitle codecs on copy, which would fail the whole job, so we omit them there.
         var keepSubtitles = request.OutputPath.EndsWith(".mkv", StringComparison.OrdinalIgnoreCase);
-        if (keepSubtitles && AddStreamMaps(args, "s", request.SubtitleStreamIndexes))
+
+        // The ordered list of mapped streams per type. Output positions are assigned in map order, so this
+        // is what turns an (input, absolute index) pair into the position -disposition and -metadata want.
+        var audio = MappedStreams(request.AudioStreamIndexes, additional, input => input.AudioStreamIndexes);
+        var subtitles = keepSubtitles
+            ? MappedStreams(request.SubtitleStreamIndexes, additional, input => input.SubtitleStreamIndexes)
+            : [];
+
+        AddStreamMaps(args, "a", audio);
+        if (keepSubtitles && AddStreamMaps(args, "s", subtitles))
         {
             args.Add("-map");
             args.Add("0:t?");
@@ -517,10 +534,16 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
             args.Add("copy");
         }
 
-        AddDefaultDisposition(args, "a", request.AudioStreamIndexes, request.DefaultAudioStreamIndex);
+        AddDefaultDisposition(args, "a", audio, request.DefaultAudioStreamIndex);
         if (keepSubtitles)
         {
-            AddDefaultDisposition(args, "s", request.SubtitleStreamIndexes, request.DefaultSubtitleStreamIndex);
+            AddDefaultDisposition(args, "s", subtitles, request.DefaultSubtitleStreamIndex);
+        }
+
+        AddMetadataOverrides(args, "a", audio, request.MetadataOverrides);
+        if (keepSubtitles)
+        {
+            AddMetadataOverrides(args, "s", subtitles, request.MetadataOverrides);
         }
 
         args.Add("-progress");
@@ -530,25 +553,49 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         return args;
     }
 
-    /// <summary>Adds <c>-map</c> entries for one stream type. A <c>null</c> selection copies every stream of
-    /// that type (<c>0:a?</c> / <c>0:s?</c>, optional so a missing type doesn't fail the job); an explicit
-    /// list maps those absolute input indexes in order. Returns whether any stream of the type is kept.</summary>
-    private static bool AddStreamMaps(List<string> args, string kind, IReadOnlyList<int>? indexes)
+    /// <summary>One mapped stream: which input file it comes from and its absolute index inside that file.
+    /// A null <see cref="Index"/> is the "copy every stream of this type" selection, which has no single
+    /// index and therefore no addressable output position.</summary>
+    private readonly record struct MappedStream(int Input, int? Index);
+
+    /// <summary>
+    /// The ordered mapped streams of one type: the primary input's selection first, then each additional
+    /// input's, which is the order ffmpeg assigns output positions in. A null primary selection stays a
+    /// single "all of this type" entry — the endpoint rejects the combinations where that would leave a
+    /// disposition or a metadata override unable to name a position.
+    /// </summary>
+    private static List<MappedStream> MappedStreams(
+        IReadOnlyList<int>? primary,
+        IReadOnlyList<AdditionalInput> additional,
+        Func<AdditionalInput, IReadOnlyList<int>?> select)
     {
-        if (indexes is null)
+        var mapped = primary is null
+            ? [new MappedStream(0, null)]
+            : primary.Select(index => new MappedStream(0, index)).ToList();
+
+        for (var ordinal = 0; ordinal < additional.Count; ordinal++)
         {
-            args.Add("-map");
-            args.Add($"0:{kind}?");
-            return true;
+            foreach (var index in select(additional[ordinal]) ?? [])
+            {
+                mapped.Add(new MappedStream(ordinal + 1, index));
+            }
         }
 
-        foreach (var index in indexes)
+        return mapped;
+    }
+
+    /// <summary>Adds <c>-map</c> entries for one stream type. The "all of this type" entry becomes
+    /// <c>0:a?</c> / <c>0:s?</c> (optional, so a missing type doesn't fail the job); every other entry maps
+    /// one absolute index of its input. Returns whether any stream of the type is kept.</summary>
+    private static bool AddStreamMaps(List<string> args, string kind, IReadOnlyList<MappedStream> mapped)
+    {
+        foreach (var stream in mapped)
         {
             args.Add("-map");
-            args.Add($"0:{index}");
+            args.Add(stream.Index is { } index ? $"{stream.Input}:{index}" : $"{stream.Input}:{kind}?");
         }
 
-        return indexes.Count > 0;
+        return mapped.Count > 0;
     }
 
     /// <summary>Adds the video encoder (and optional downscale) for the resolved hardware. VAAPI scales on the
@@ -609,19 +656,64 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
     /// index list to translate the chosen absolute index into the output-relative position ffmpeg's
     /// <c>-disposition:&lt;kind&gt;:&lt;pos&gt;</c> expects; with no list (copy-all) or no chosen default the
     /// source dispositions are left untouched.</summary>
-    private static void AddDefaultDisposition(List<string> args, string kind, IReadOnlyList<int>? indexes, int? defaultIndex)
+    private static void AddDefaultDisposition(List<string> args, string kind, IReadOnlyList<MappedStream> mapped, int? defaultIndex)
     {
-        // Only act on a default that is actually one of the mapped tracks. Without this guard a stray index
-        // (the endpoint rejects it, but this stays correct in isolation) would clear every default of the type.
-        if (defaultIndex is null || indexes is null || !indexes.Contains(defaultIndex.Value))
+        // The chosen default is an absolute index in the primary input. Only act when it is actually one of
+        // the mapped tracks: without this guard a stray index (the endpoint rejects it, but this stays
+        // correct in isolation) would clear every default of the type.
+        if (defaultIndex is null || !mapped.Any(stream => stream is { Input: 0, Index: { } index } && index == defaultIndex.Value))
         {
             return;
         }
 
-        for (var position = 0; position < indexes.Count; position++)
+        for (var position = 0; position < mapped.Count; position++)
         {
             args.Add($"-disposition:{kind}:{position}");
-            args.Add(indexes[position] == defaultIndex.Value ? "default" : "0");
+            args.Add(mapped[position] is { Input: 0, Index: { } index } && index == defaultIndex.Value ? "default" : "0");
+        }
+    }
+
+    /// <summary>
+    /// Writes the requested language/title onto the output positions their streams landed in. A field the
+    /// request left null is not emitted at all, so the source stream's own tag survives — an operator who
+    /// renames one track must not silently freeze the rest.
+    /// </summary>
+    private static void AddMetadataOverrides(
+        List<string> args,
+        string kind,
+        IReadOnlyList<MappedStream> mapped,
+        IReadOnlyList<StreamMetadataOverride>? overrides)
+    {
+        if (overrides is null || overrides.Count == 0)
+        {
+            return;
+        }
+
+        for (var position = 0; position < mapped.Count; position++)
+        {
+            if (mapped[position].Index is not { } index)
+            {
+                continue;
+            }
+
+            var input = mapped[position].Input;
+            var match = overrides.FirstOrDefault(o => o.Input == input && o.StreamIndex == index);
+            if (match is null)
+            {
+                continue;
+            }
+
+            if (match.Language is { Length: > 0 } language)
+            {
+                args.Add($"-metadata:s:{kind}:{position}");
+                args.Add($"language={language}");
+            }
+
+            if (match.Title is { Length: > 0 } title)
+            {
+                args.Add($"-metadata:s:{kind}:{position}");
+                args.Add($"title={title}");
+            }
         }
     }
 

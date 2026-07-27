@@ -1,4 +1,6 @@
 using System.Text.Json;
+using Microsoft.AspNetCore.Mvc;
+using TranscodeEngine.Api.Probing;
 using TranscodeEngine.Api.Realtime;
 using TranscodeEngine.Api.Transcoding;
 
@@ -26,7 +28,12 @@ public static class TranscodeEndpoints
             }
 
             // "copy" remuxes the video untouched; the codec/hardware/crf/height knobs are then irrelevant.
-            var copyVideo = string.Equals(request.VideoCodec?.Trim(), "copy", StringComparison.OrdinalIgnoreCase);
+            // Naming additional inputs makes the job a merge, which is a stream copy by definition — so it
+            // implies the same thing and rejects the same knobs.
+            var additionalInputs = request.AdditionalInputs ?? [];
+            var isMerge = additionalInputs.Count > 0;
+            var copyVideo = isMerge ||
+                string.Equals(request.VideoCodec?.Trim(), "copy", StringComparison.OrdinalIgnoreCase);
 
             var codec = TranscodeVideoCodec.Hevc;
             if (!copyVideo && !TryParseCodec(request.VideoCodec, out codec))
@@ -81,10 +88,43 @@ public static class TranscodeEndpoints
 
             // Subtitles (and their defaults) ride only in Matroska outputs; for other containers BuildArguments
             // drops them, so accepting a subtitle selection would silently do nothing.
-            if (!request.OutputPath.EndsWith(".mkv", StringComparison.OrdinalIgnoreCase) &&
+            var matroskaOutput = request.OutputPath.EndsWith(".mkv", StringComparison.OrdinalIgnoreCase);
+            if (!matroskaOutput &&
                 (request.SubtitleStreamIndexes is not null || request.DefaultSubtitleStreamIndex is not null))
             {
                 return Results.BadRequest(new { error = "subtitle selection is only supported for Matroska (.mkv) outputs." });
+            }
+
+            foreach (var input in additionalInputs)
+            {
+                if (string.IsNullOrWhiteSpace(input.Path))
+                {
+                    return Results.BadRequest(new { error = "every additional input needs a path." });
+                }
+
+                if ((input.AudioStreamIndexes?.Count ?? 0) + (input.SubtitleStreamIndexes?.Count ?? 0) == 0)
+                {
+                    return Results.BadRequest(new { error = $"additional input '{input.Path}' selects no streams." });
+                }
+
+                if (input.AudioStreamIndexes?.Any(index => index < 0) == true ||
+                    input.SubtitleStreamIndexes?.Any(index => index < 0) == true)
+                {
+                    return Results.BadRequest(new { error = "stream indexes must be non-negative." });
+                }
+
+                if (!matroskaOutput && input.SubtitleStreamIndexes?.Count > 0)
+                {
+                    return Results.BadRequest(new { error = "subtitle selection is only supported for Matroska (.mkv) outputs." });
+                }
+            }
+
+            // An override names a position by (input, absolute index), so the stream it names has to be one
+            // the job explicitly maps — the same requirement a chosen default track carries, for the same
+            // reason: without an explicit list there is no position to write to.
+            if (MetadataOverrideError(request, additionalInputs, matroskaOutput) is { } overrideError)
+            {
+                return Results.BadRequest(new { error = overrideError });
             }
 
             string inputPath;
@@ -109,6 +149,34 @@ public static class TranscodeEndpoints
                 return Results.BadRequest(new { error = "outputPath must differ from inputPath." });
             }
 
+            // Each additional input resolves the same way the primary does, defaulting to its mount, and
+            // must exist and differ from the output — the same checks, so the same failures read alike.
+            var resolvedInputs = new List<AdditionalInput>(additionalInputs.Count);
+            foreach (var input in additionalInputs)
+            {
+                string resolved;
+                try
+                {
+                    resolved = settings.ResolveMediaPath(input.MountLabel ?? request.InputMountLabel, input.Path);
+                }
+                catch (ArgumentException exception)
+                {
+                    return Results.BadRequest(new { error = exception.Message });
+                }
+
+                if (!File.Exists(resolved))
+                {
+                    return Results.BadRequest(new { error = $"input '{input.Path}' does not exist on the media mount." });
+                }
+
+                if (string.Equals(resolved, outputPath, StringComparison.Ordinal))
+                {
+                    return Results.BadRequest(new { error = "outputPath must differ from every input." });
+                }
+
+                resolvedInputs.Add(new AdditionalInput(resolved, input.AudioStreamIndexes, input.SubtitleStreamIndexes));
+            }
+
             var jobRequest = new TranscodeJobRequest(
                 inputPath,
                 outputPath,
@@ -120,9 +188,49 @@ public static class TranscodeEndpoints
                 request.AudioStreamIndexes,
                 request.SubtitleStreamIndexes,
                 request.DefaultAudioStreamIndex,
-                request.DefaultSubtitleStreamIndex);
+                request.DefaultSubtitleStreamIndex,
+                resolvedInputs.Count > 0 ? resolvedInputs : null,
+                request.MetadataOverrides?.Select(o => new StreamMetadataOverride(o.Input, o.StreamIndex, o.Language, o.Title)).ToList());
             var descriptor = await engine.CreateAsync(jobRequest, ct);
             return Results.Ok(descriptor);
+        });
+
+        // Inspection, not a job: it answers in the response rather than creating something to poll, so a
+        // consumer can read a file's streams without shipping ffprobe itself. One file per call — ffprobe
+        // dominates the cost, so batching would buy partial-failure semantics for a sliver of the time.
+        // [FromServices] on the inspector: without it, minimal-API parameter inference has to ask the
+        // container whether IMediaInspector is a service or the request body, which forces every host that
+        // maps these endpoints — including tests that only exercise /jobs — to register it.
+        app.MapPost("/probe", async (
+            ProbeRequest request,
+            [FromServices] IMediaInspector inspector,
+            TranscodeEngineSettings settings,
+            CancellationToken ct) =>
+        {
+            if (string.IsNullOrWhiteSpace(request.Path))
+            {
+                return Results.BadRequest(new { error = "path is required." });
+            }
+
+            string absolutePath;
+            try
+            {
+                absolutePath = settings.ResolveMediaPath(request.MountLabel, request.Path);
+            }
+            catch (ArgumentException exception)
+            {
+                return Results.BadRequest(new { error = exception.Message });
+            }
+
+            if (!File.Exists(absolutePath))
+            {
+                return Results.BadRequest(new { error = $"'{request.Path}' does not exist on the media mount." });
+            }
+
+            var result = await inspector.InspectAsync(absolutePath, ct);
+            return result is null
+                ? Results.BadRequest(new { error = $"'{request.Path}' could not be probed." })
+                : Results.Ok(result);
         });
 
         app.MapGet("/jobs", (ITranscodeEngine engine) => Results.Ok(engine.GetAllSnapshots()));
@@ -197,6 +305,48 @@ public static class TranscodeEndpoints
                 stream.Unsubscribe(id);
             }
         });
+    }
+
+    /// <summary>
+    /// Validates every metadata override: it must name a real input, carry at least one value to write, and
+    /// address a stream the job explicitly maps — an override against an unlisted stream has no output
+    /// position, exactly as a chosen default track would not. Returns an error message, or null when valid.
+    /// </summary>
+    private static string? MetadataOverrideError(
+        CreateJobRequest request,
+        IReadOnlyList<AdditionalInputRequest> additionalInputs,
+        bool matroskaOutput)
+    {
+        foreach (var entry in request.MetadataOverrides ?? [])
+        {
+            if (entry.Language is null && entry.Title is null)
+            {
+                return "a metadata override must set a language or a title.";
+            }
+
+            if (entry.Input < 0 || entry.Input > additionalInputs.Count)
+            {
+                return $"metadata override names input {entry.Input}, which this job does not have.";
+            }
+
+            if (entry.StreamIndex < 0)
+            {
+                return "stream indexes must be non-negative.";
+            }
+
+            var (audio, subtitles) = entry.Input == 0
+                ? (request.AudioStreamIndexes, request.SubtitleStreamIndexes)
+                : (additionalInputs[entry.Input - 1].AudioStreamIndexes, additionalInputs[entry.Input - 1].SubtitleStreamIndexes);
+
+            var mapped = audio?.Contains(entry.StreamIndex) == true ||
+                (matroskaOutput && subtitles?.Contains(entry.StreamIndex) == true);
+            if (!mapped)
+            {
+                return $"metadata override for stream {entry.StreamIndex} of input {entry.Input} must name a stream the job maps explicitly.";
+            }
+        }
+
+        return null;
     }
 
     /// <summary>Validates a chosen default track: it requires the explicit index list (to map the absolute
