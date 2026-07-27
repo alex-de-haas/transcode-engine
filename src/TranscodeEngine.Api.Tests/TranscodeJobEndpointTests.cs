@@ -183,5 +183,244 @@ public sealed class TranscodeJobEndpointTests
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
+    // ---- merges: additional inputs and metadata overrides ----
+
+    /// <summary>Creates a media root holding the named files, so path resolution and existence checks run
+    /// against something real.</summary>
+    private static string MediaWith(params string[] names)
+    {
+        var media = Directory.CreateTempSubdirectory("te-media").FullName;
+        foreach (var name in names)
+        {
+            File.WriteAllText(Path.Combine(media, name), "x");
+        }
+
+        return media;
+    }
+
+    [Fact]
+    public async Task Post_AdditionalInputSelectingNoStreams_ReturnsBadRequest()
+    {
+        var media = MediaWith("in.mkv", "dub.mka");
+        var (client, app) = await HostAsync(Settings($"media={media}"), ITranscodeEngine.Imposter().Instance());
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync("/jobs", new
+        {
+            inputMountLabel = "media",
+            inputPath = "in.mkv",
+            outputPath = "out.mkv",
+            additionalInputs = new[] { new { path = "dub.mka" } },
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("selects no streams", (await response.Content.ReadFromJsonAsync<ErrorBody>())!.Error);
+    }
+
+    [Fact]
+    public async Task Post_MissingAdditionalInput_ReturnsBadRequest()
+    {
+        var media = MediaWith("in.mkv");
+        var (client, app) = await HostAsync(Settings($"media={media}"), ITranscodeEngine.Imposter().Instance());
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync("/jobs", new
+        {
+            inputMountLabel = "media",
+            inputPath = "in.mkv",
+            outputPath = "out.mkv",
+            additionalInputs = new[] { new { path = "gone.mka", audioStreamIndexes = new[] { 0 } } },
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("gone.mka", (await response.Content.ReadFromJsonAsync<ErrorBody>())!.Error);
+    }
+
+    [Fact]
+    public async Task Post_MergeWithEncodeOnlyKnob_ReturnsBadRequest()
+    {
+        // A merge is a stream copy by definition, so the encode-only options are as contradictory here as
+        // they already are for videoCodec: "copy" — and the caller never had to say "copy" to get one.
+        var media = MediaWith("in.mkv", "dub.mka");
+        var (client, app) = await HostAsync(Settings($"media={media}"), ITranscodeEngine.Imposter().Instance());
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync("/jobs", new
+        {
+            inputMountLabel = "media",
+            inputPath = "in.mkv",
+            outputPath = "out.mkv",
+            maxHeight = 1080,
+            additionalInputs = new[] { new { path = "dub.mka", audioStreamIndexes = new[] { 0 } } },
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("maxHeight", (await response.Content.ReadFromJsonAsync<ErrorBody>())!.Error);
+    }
+
+    [Fact]
+    public async Task Post_OverrideOfAnUnmappedStream_ReturnsBadRequest()
+    {
+        // Without an explicit selection there is no output position to write the metadata to — the same
+        // requirement a chosen default track carries.
+        var media = MediaWith("in.mkv");
+        var (client, app) = await HostAsync(Settings($"media={media}"), ITranscodeEngine.Imposter().Instance());
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync("/jobs", new
+        {
+            inputMountLabel = "media",
+            inputPath = "in.mkv",
+            outputPath = "out.mkv",
+            metadataOverrides = new[] { new { input = 0, streamIndex = 1, title = "Original" } },
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("maps explicitly", (await response.Content.ReadFromJsonAsync<ErrorBody>())!.Error);
+    }
+
+    [Fact]
+    public async Task Post_OverrideNamingAnInputTheJobDoesNotHave_ReturnsBadRequest()
+    {
+        var media = MediaWith("in.mkv");
+        var (client, app) = await HostAsync(Settings($"media={media}"), ITranscodeEngine.Imposter().Instance());
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync("/jobs", new
+        {
+            inputMountLabel = "media",
+            inputPath = "in.mkv",
+            outputPath = "out.mkv",
+            audioStreamIndexes = new[] { 1 },
+            metadataOverrides = new[] { new { input = 3, streamIndex = 0, title = "Nope" } },
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("does not have", (await response.Content.ReadFromJsonAsync<ErrorBody>())!.Error);
+    }
+
+    [Fact]
+    public async Task Post_EmptyOverride_ReturnsBadRequest()
+    {
+        var media = MediaWith("in.mkv");
+        var (client, app) = await HostAsync(Settings($"media={media}"), ITranscodeEngine.Imposter().Instance());
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync("/jobs", new
+        {
+            inputMountLabel = "media",
+            inputPath = "in.mkv",
+            outputPath = "out.mkv",
+            audioStreamIndexes = new[] { 1 },
+            metadataOverrides = new[] { new { input = 0, streamIndex = 1 } },
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("language or a title", (await response.Content.ReadFromJsonAsync<ErrorBody>())!.Error);
+    }
+
+    [Fact]
+    public async Task Post_Merge_IsAcceptedAndReachesTheEngineAsACopy()
+    {
+        var media = MediaWith("in.mkv", "dub.mka");
+        var imposter = ITranscodeEngine.Imposter();
+        TranscodeJobRequest? seen = null;
+        imposter.CreateAsync(Arg<TranscodeJobRequest>.Any(), Arg<CancellationToken>.Any())
+            .Returns((TranscodeJobRequest request, CancellationToken _) =>
+            {
+                seen = request;
+                return Task.FromResult(Descriptor);
+            });
+        var (client, app) = await HostAsync(Settings($"media={media}"), imposter.Instance());
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync("/jobs", new
+        {
+            inputMountLabel = "media",
+            inputPath = "in.mkv",
+            outputPath = "out.mkv",
+            audioStreamIndexes = new[] { 1 },
+            additionalInputs = new[] { new { path = "dub.mka", audioStreamIndexes = new[] { 0 } } },
+            metadataOverrides = new[] { new { input = 1, streamIndex = 0, language = "rus", title = "MVO wMedia" } },
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.True(seen!.CopyVideo);
+        var additional = Assert.Single(seen.AdditionalInputs!);
+        Assert.Equal(Path.Combine(media, "dub.mka"), additional.Path);
+        var over = Assert.Single(seen.MetadataOverrides!);
+        Assert.Equal("MVO wMedia", over.Title);
+    }
+
+    [Fact]
+    public async Task Post_OverrideWithOnlyEmptyValues_ReturnsBadRequest()
+    {
+        // Argument construction emits a field only when it has content, so accepting "" would report a
+        // successful job that changes nothing.
+        var media = MediaWith("in.mkv");
+        var (client, app) = await HostAsync(Settings($"media={media}"), ITranscodeEngine.Imposter().Instance());
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync("/jobs", new
+        {
+            inputMountLabel = "media",
+            inputPath = "in.mkv",
+            outputPath = "out.mkv",
+            audioStreamIndexes = new[] { 1 },
+            metadataOverrides = new[] { new { input = 0, streamIndex = 1, language = "", title = "  " } },
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("language or a title", (await response.Content.ReadFromJsonAsync<ErrorBody>())!.Error);
+    }
+
+    [Fact]
+    public async Task Post_DuplicateOverridesForOneStream_ReturnsBadRequest()
+    {
+        // Both cannot be applied, and choosing one silently would discard the caller's other instruction.
+        var media = MediaWith("in.mkv");
+        var (client, app) = await HostAsync(Settings($"media={media}"), ITranscodeEngine.Imposter().Instance());
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync("/jobs", new
+        {
+            inputMountLabel = "media",
+            inputPath = "in.mkv",
+            outputPath = "out.mkv",
+            audioStreamIndexes = new[] { 1 },
+            metadataOverrides = new[]
+            {
+                new { input = 0, streamIndex = 1, title = "First" },
+                new { input = 0, streamIndex = 1, title = "Second" },
+            },
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("more than one metadata override", (await response.Content.ReadFromJsonAsync<ErrorBody>())!.Error);
+    }
+
+    [Fact]
+    public async Task Post_OverrideOnAnAppendedTrackWithoutAnExplicitPrimaryList_ReturnsBadRequest()
+    {
+        // A null primary selection is one "copy every audio stream" mapping that expands to however many the
+        // file holds, so an appended track after it has no position this app can compute — writing metadata
+        // against the assumed one would relabel a primary track instead.
+        var media = MediaWith("in.mkv", "dub.mka");
+        var (client, app) = await HostAsync(Settings($"media={media}"), ITranscodeEngine.Imposter().Instance());
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync("/jobs", new
+        {
+            inputMountLabel = "media",
+            inputPath = "in.mkv",
+            outputPath = "out.mkv",
+            additionalInputs = new[] { new { path = "dub.mka", audioStreamIndexes = new[] { 0 } } },
+            metadataOverrides = new[] { new { input = 1, streamIndex = 0, title = "Дубляж" } },
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("audioStreamIndexes must be listed explicitly", (await response.Content.ReadFromJsonAsync<ErrorBody>())!.Error);
+    }
+
     private sealed record ErrorBody(string Error);
 }

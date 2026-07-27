@@ -66,6 +66,21 @@ Each snapshot's `effectiveHardware` lets the consumer confirm hardware encoding 
 effect (or surface that it fell back to software), and `etaSeconds` / `percentComplete`
 drive a progress UI.
 
+## Beyond transcoding
+
+Two capabilities exist for consumers that would otherwise have to ship `ffmpeg` and
+`ffprobe` of their own:
+
+- [`POST /probe`](probe-api/feature.md) inspects one file's container and streams and
+  answers in the response. A consumer that also carries its own lighter probe compares
+  the two field for field, so this endpoint owns the normalized vocabulary rather than
+  passing ffprobe's schema through.
+- [Merge jobs](merge-jobs/feature.md) fold sidecar audio and subtitle files into a
+  video as a stream copy, and let any output stream's language and title be rewritten
+  on the way.
+
+Together they let a consumer drop both binaries from its own image.
+
 ## Tolerating absence
 
 A consumer should degrade gracefully when the engine is not present — keep the rest of
@@ -73,6 +88,11 @@ its surface working when `HOSTY_DEPENDENCY_TRANSCODE_ENGINE_URL` is unset and si
 disable transcoding (e.g. behind a `Disabled…` fallback of the same client interface,
 so the rest of the code is unaware). It can also gate readiness on `GET /healthz`
 (liveness) before submitting jobs.
+
+The same applies to the capabilities above, and it is why a consumer should keep a
+fallback for probing rather than depending on this app for it: without the engine it
+should still be able to read what it can from a file itself, and treat the richer
+answer as an upgrade.
 
 ## Current caveat — non-public endpoint
 

@@ -22,6 +22,7 @@ see [Consumer integration](consumer-integration.md)). JSON is serialized with
 | Method &amp; path | Purpose | Success | Notable errors |
 | --- | --- | --- | --- |
 | `POST /jobs` | Create a transcode job | `200` `JobDescriptor` | `400` bad request/path/input |
+| `POST /probe` | Inspect one file's streams | `200` `ProbeResponse` | `400` bad mount/path/not media |
 | `GET /jobs` | List all live snapshots | `200` `JobSnapshot[]` | — |
 | `GET /jobs/{jobId}` | One live snapshot | `200` `JobSnapshot` | `404` unknown id |
 | `POST /jobs/{jobId}/cancel` | Cancel a running/queued job | `204` | — |
@@ -32,6 +33,12 @@ see [Consumer integration](consumer-integration.md)). JSON is serialized with
 
 `jobId` is a server-assigned GUID (32 hex chars). The cancel/remove handlers are
 idempotent: an unknown id is a `204` no-op, not a `404`.
+
+`POST /probe` is the one endpoint here that is not about jobs: it inspects a file
+and answers in the response rather than queueing anything, so a consumer can read
+a file's streams without shipping `ffprobe` itself. It resolves its path through
+the same media mounts and returns the same error envelope. See
+[Probe API](probe-api/feature.md).
 
 ## `POST /jobs`
 
@@ -52,6 +59,8 @@ else falls back to an engine default:
 | `subtitleStreamIndexes` | int[]? | Absolute input subtitle indices to keep. Omit to copy all. **Matroska (`.mkv`) output only.** |
 | `defaultAudioStreamIndex` | int? | Mark one mapped audio track as the container default. Requires `audioStreamIndexes` and must be a member of it. |
 | `defaultSubtitleStreamIndex` | int? | Same, for subtitles. Requires `subtitleStreamIndexes`; `.mkv` output only. |
+| `additionalInputs` | object[]? | Further files whose streams join the output — a merge. Naming any implies a stream copy. See [Merge Jobs](merge-jobs/feature.md). |
+| `metadataOverrides` | object[]? | Rewrites an output stream's `language`/`title`. Applies to a merge and to a plain transcode alike. |
 
 The handler validates before it mutates: it parses the codec/hardware, range-checks
 `crf` / `maxHeight`, rejects negative stream indices, rejects encode-only knobs

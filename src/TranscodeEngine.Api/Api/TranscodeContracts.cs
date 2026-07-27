@@ -27,4 +27,33 @@ public sealed record CreateJobRequest(
     IReadOnlyList<int>? AudioStreamIndexes = null,
     IReadOnlyList<int>? SubtitleStreamIndexes = null,
     int? DefaultAudioStreamIndex = null,
-    int? DefaultSubtitleStreamIndex = null);
+    int? DefaultSubtitleStreamIndex = null,
+    IReadOnlyList<AdditionalInputRequest>? AdditionalInputs = null,
+    IReadOnlyList<StreamMetadataOverrideRequest>? MetadataOverrides = null);
+
+/// <summary>
+/// A further file whose streams join the output — a sidecar dub or subtitle being merged into the video.
+/// Naming any turns the job into a merge: the video is stream-copied and the encode-only knobs are rejected,
+/// as they already are for <c>videoCodec: "copy"</c>. The path resolves against the media mount its label
+/// selects, defaulting to the primary input's mount, and must exist. At least one stream has to be selected,
+/// and selections are explicit absolute indexes within that file — the engine turns each into an output
+/// position, which it can only do from a known list.
+/// </summary>
+public sealed record AdditionalInputRequest(
+    string? MountLabel,
+    string Path,
+    IReadOnlyList<int>? AudioStreamIndexes = null,
+    IReadOnlyList<int>? SubtitleStreamIndexes = null);
+
+/// <summary>
+/// Replaces one output stream's language and/or title, letting an operator correct a mislabelled track
+/// while it is being written. <c>input</c> is the ordinal of the file the stream comes from — 0 is the
+/// primary input, 1 the first additional input — and <c>streamIndex</c> its absolute index in that file.
+/// Applies to any job, merge or plain transcode. A field left null keeps the source stream's own value.
+/// The stream must be one the job explicitly maps, for the same reason a chosen default track must be.
+/// </summary>
+public sealed record StreamMetadataOverrideRequest(
+    int Input,
+    int StreamIndex,
+    string? Language = null,
+    string? Title = null);

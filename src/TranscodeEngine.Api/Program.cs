@@ -6,6 +6,7 @@
 // the localCommand runtime. See README.
 
 using TranscodeEngine.Api.Api;
+using TranscodeEngine.Api.Probing;
 using TranscodeEngine.Api.Realtime;
 using TranscodeEngine.Api.Telemetry;
 using TranscodeEngine.Api.Transcoding;
@@ -35,6 +36,9 @@ builder.Services.AddSingleton(TranscodeEngineSettings.FromConfiguration(builder.
 builder.Services.AddSingleton<FfmpegTranscodeEngine>();
 builder.Services.AddSingleton<ITranscodeEngine>(sp => sp.GetRequiredService<FfmpegTranscodeEngine>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<FfmpegTranscodeEngine>());
+
+// Exposes the ffprobe this image already carries, so a consumer does not have to ship its own.
+builder.Services.AddSingleton<IMediaInspector, FfprobeMediaInspector>();
 
 builder.Services.AddSingleton<TranscodeEventStream>();
 builder.Services.AddHostedService<TranscodeProgressBroadcaster>();

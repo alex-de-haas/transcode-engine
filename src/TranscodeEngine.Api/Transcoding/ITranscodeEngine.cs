@@ -42,7 +42,32 @@ public sealed record TranscodeJobRequest(
     IReadOnlyList<int>? AudioStreamIndexes = null,
     IReadOnlyList<int>? SubtitleStreamIndexes = null,
     int? DefaultAudioStreamIndex = null,
-    int? DefaultSubtitleStreamIndex = null);
+    int? DefaultSubtitleStreamIndex = null,
+    IReadOnlyList<AdditionalInput>? AdditionalInputs = null,
+    IReadOnlyList<StreamMetadataOverride>? MetadataOverrides = null);
+
+/// <summary>
+/// A file whose streams join the output alongside the primary input's — a sidecar dub or subtitle being
+/// merged in. Its selections are absolute stream indexes within <b>that</b> file and are always explicit:
+/// the engine turns each into an output position for the metadata and disposition arguments, which it can
+/// only do from a known list. <see cref="Path"/> is already resolved against a media mount.
+/// </summary>
+public sealed record AdditionalInput(
+    string Path,
+    IReadOnlyList<int>? AudioStreamIndexes = null,
+    IReadOnlyList<int>? SubtitleStreamIndexes = null);
+
+/// <summary>
+/// Replaces one output stream's language and/or title. <see cref="Input"/> is the ordinal of the file the
+/// stream comes from — 0 is the primary input, 1 the first <see cref="AdditionalInput"/> — and
+/// <see cref="StreamIndex"/> is its absolute index within that file. A null field leaves the source
+/// stream's own value alone, so editing one track never freezes the others' metadata.
+/// </summary>
+public sealed record StreamMetadataOverride(
+    int Input,
+    int StreamIndex,
+    string? Language = null,
+    string? Title = null);
 
 /// <summary>What is known about a job right after it is created (before the worker picks it up).</summary>
 public sealed record JobDescriptor(
