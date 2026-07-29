@@ -51,7 +51,7 @@ else falls back to an engine default:
 | `outputPath` | string | **Required.** Where the result is written, relative to the (output) mount. Must differ from the resolved input. |
 | `inputMountLabel` | string? | Selects the media mount the input resolves against. Required when several mounts are configured; optional with exactly one. See [Media mounts](media-mounts.md). |
 | `outputMountLabel` | string? | Media mount for the output. Defaults to `inputMountLabel` when omitted. |
-| `videoCodec` | string? | `h264`, `hevc` (default), or `copy` (remux the video untouched). Aliases: `h265`/`x265` → hevc, `avc`/`x264` → h264. |
+| `videoCodec` | string? | `h264`, `hevc` (default), or `copy` (remux the video untouched). Aliases: `h265`/`x265` → hevc, `avc`/`x264` → h264. **Defaults to `copy` on a merge** — see `additionalInputs`. |
 | `hardwareAcceleration` | string? | `auto` (default), `vaapi`, `videotoolbox`, `amf`, or `none`. A choice the host can't satisfy falls back to software. See [Hardware acceleration](hardware-acceleration.md). |
 | `crf` | int? | Software-encoder quality, `0`–`51`. Ignored by the hardware encoders. |
 | `maxHeight` | int? | Downscale to this height (aspect kept, never upscales), `16`–`4320`. Omit to keep the source resolution. |
@@ -59,12 +59,13 @@ else falls back to an engine default:
 | `subtitleStreamIndexes` | int[]? | Absolute input subtitle indices to keep. Omit to copy all. **Matroska (`.mkv`) output only.** |
 | `defaultAudioStreamIndex` | int? | Mark one mapped audio track as the container default. Requires `audioStreamIndexes` and must be a member of it. |
 | `defaultSubtitleStreamIndex` | int? | Same, for subtitles. Requires `subtitleStreamIndexes`; `.mkv` output only. |
-| `additionalInputs` | object[]? | Further files whose streams join the output — a merge. Naming any implies a stream copy. See [Merge Jobs](merge-jobs/feature.md). |
+| `additionalInputs` | object[]? | Further files whose streams join the output — a merge. Says nothing about the picture: the video follows `videoCodec`, so a merge may re-encode. Naming any only changes that field's **default** to `copy`. See [Merge Jobs](merge-jobs/feature.md). |
 | `metadataOverrides` | object[]? | Rewrites an output stream's `language`/`title`. Applies to a merge and to a plain transcode alike. |
 
 The handler validates before it mutates: it parses the codec/hardware, range-checks
 `crf` / `maxHeight`, rejects negative stream indices, rejects encode-only knobs
-(`maxHeight` / `crf`) combined with `videoCodec: copy` as contradictory, requires a
+(`maxHeight` / `crf`) whenever the video is copied — asked for with
+`videoCodec: copy` or defaulted to by a merge that named none — requires a
 chosen default track to be in its explicit index list, and rejects a subtitle
 selection for a non-`.mkv` output (subtitles ride only in Matroska — see
 [Transcode engine](transcode-engine.md#ffmpeg-argument-construction)). It then

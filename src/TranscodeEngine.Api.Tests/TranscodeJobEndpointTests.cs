@@ -256,7 +256,12 @@ public sealed class TranscodeJobEndpointTests
         });
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Contains("maxHeight", (await response.Content.ReadFromJsonAsync<ErrorBody>())!.Error);
+        var error = (await response.Content.ReadFromJsonAsync<ErrorBody>())!.Error;
+        Assert.Contains("maxHeight", error);
+        // The caller never wrote "copy", so quoting it back would read as the request being misunderstood.
+        // What they need is the fix: naming a codec is what buys the knob.
+        Assert.DoesNotContain("videoCodec is 'copy'", error);
+        Assert.Contains("name 'h264' or 'hevc'", error);
     }
 
     [Fact]
@@ -412,7 +417,10 @@ public sealed class TranscodeJobEndpointTests
         });
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Contains("crf", (await response.Content.ReadFromJsonAsync<ErrorBody>())!.Error);
+        var error = (await response.Content.ReadFromJsonAsync<ErrorBody>())!.Error;
+        Assert.Contains("crf", error);
+        // Here the caller did write it, so the message names what they asked for.
+        Assert.Contains("videoCodec is 'copy'", error);
     }
 
     [Fact]

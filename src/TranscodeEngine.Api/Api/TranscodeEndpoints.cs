@@ -68,15 +68,21 @@ public static class TranscodeEndpoints
                 return Results.BadRequest(new { error = "stream indexes must be non-negative." });
             }
 
-            // A video copy keeps the source picture untouched, so encode-only knobs are contradictory.
+            // A video copy keeps the source picture untouched, so encode-only knobs are contradictory. The
+            // reason names which copy it is: a merge that simply omitted the codec never said "copy", and a
+            // message quoting one it did not write reads like the request was misunderstood — when what it
+            // needs is to be told that naming a codec is what buys the knob.
+            var copyReason = isMerge && string.IsNullOrWhiteSpace(request.VideoCodec)
+                ? "a merge that names no videoCodec copies the video; name 'h264' or 'hevc' to encode it"
+                : "videoCodec is 'copy'";
             if (copyVideo && request.MaxHeight is not null)
             {
-                return Results.BadRequest(new { error = "maxHeight cannot be set when videoCodec is 'copy'." });
+                return Results.BadRequest(new { error = $"maxHeight cannot be set when {copyReason}." });
             }
 
             if (copyVideo && request.Crf is not null)
             {
-                return Results.BadRequest(new { error = "crf cannot be set when videoCodec is 'copy'." });
+                return Results.BadRequest(new { error = $"crf cannot be set when {copyReason}." });
             }
 
             // A chosen default needs its explicit (ordered) index list — that's how the engine turns the

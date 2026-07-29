@@ -76,8 +76,9 @@ Two capabilities exist for consumers that would otherwise have to ship `ffmpeg` 
   the two field for field, so this endpoint owns the normalized vocabulary rather than
   passing ffprobe's schema through.
 - [Merge jobs](merge-jobs/feature.md) fold sidecar audio and subtitle files into a
-  video as a stream copy, and let any output stream's language and title be rewritten
-  on the way.
+  video — copying it by default, or re-encoding it in the same pass when the job
+  names a codec — and let any output stream's language and title be rewritten on the
+  way.
 
 Together they let a consumer drop both binaries from its own image.
 
