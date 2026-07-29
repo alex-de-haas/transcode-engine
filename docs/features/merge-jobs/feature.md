@@ -1,7 +1,7 @@
 # Merge Jobs
 
 Created: 2026-07-27
-Updated: 2026-07-27
+Updated: 2026-07-29
 
 A job can name further files whose streams join its output, so a consumer can fold
 sidecar dubs and subtitles into a video without running `ffmpeg` itself. The same
@@ -28,10 +28,22 @@ valid options — which validation already says.
 }
 ```
 
-Naming any additional input **makes the job a merge**, which is a stream copy by
-definition — the caller does not have to also say `videoCodec: "copy"`, and the
-encode-only knobs (`maxHeight`, `crf`) are rejected exactly as they are for an
-explicit copy.
+Naming any additional input **makes the job a merge**. What happens to the *video*
+is a separate question: appending tracks from other files says nothing about the
+picture, so a merge may carry a real `videoCodec` and re-encode in the same pass.
+Shrinking a remux while folding its dubs in is one job, not two passes over the
+same gigabytes — and the second pass would re-encode what the first had already
+written.
+
+**A merge with no `videoCodec` still copies**, where an ordinary job would default
+to HEVC. Re-encoding is the expensive and lossy direction, and it must never be
+what a caller gets by omission — least of all one written when a merge was a copy
+by definition. So the rule reads: say nothing and the video is untouched; say
+`copy` and it is untouched; name a codec and it is encoded.
+
+The encode-only knobs (`maxHeight`, `crf`) follow the video, not the merge: they
+are rejected whenever the video is copied — explicitly or by a merge's default —
+and accepted whenever it is encoded.
 
 Each input resolves against the media mount its `mountLabel` selects, defaulting
 to the primary input's mount, and must exist and differ from the output. The
@@ -94,7 +106,8 @@ Unchanged, and it works for a merge without special handling: ffmpeg emits
 `out_time_us` and `total_size` for a stream copy just as it does for an encode, and
 the duration probe that job creation performs reads the primary input — the video,
 whose length is the merge's length. `fps` is meaningless for a copy and simply
-stays absent, which the snapshot already tolerates.
+stays absent, which the snapshot already tolerates; a merge that re-encodes reports
+it like any other encode.
 
 ## Not in scope
 
@@ -109,14 +122,17 @@ stays absent, which the snapshot already tolerates.
 
 - `MergeJobArgumentTests` — argument construction: every additional input becoming
   an ffmpeg input after the primary; the full map order across inputs; the stream
-  copy of every track; an appended track's metadata landing on its own output
-  position; a primary stream being relabelled; a null field not being written; a
-  subtitle override addressing the subtitle positions; a default track addressing
-  positions across inputs; overrides on a plain transcode; and a non-Matroska
-  output dropping subtitles and their overrides together.
+  copy of every track; a merge that re-encodes encoding the video while still
+  copying and appending the tracks it merges; an appended track's metadata landing
+  on its own output position; a primary stream being relabelled; a null field not
+  being written; a subtitle override addressing the subtitle positions; a default
+  track addressing positions across inputs; overrides on a plain transcode; and a
+  non-Matroska output dropping subtitles and their overrides together.
 - `TranscodeJobEndpointTests` — validation: an additional input selecting no
-  streams, a missing additional input, an encode-only knob on a merge, an override
-  of an unmapped stream, an override naming an input the job does not have, an
-  empty override, one carrying only whitespace, two overrides for one stream, an
-  override on an appended track without an explicit primary list, and an accepted
-  merge reaching the engine as a copy with its resolved paths.
+  streams, a missing additional input, an encode-only knob on a merge that names no
+  codec, the same knobs accepted once it names one, an explicit `copy` still
+  refusing them, an override of an unmapped stream, an override naming an input the
+  job does not have, an empty override, one carrying only whitespace, two overrides
+  for one stream, an override on an appended track without an explicit primary
+  list, and an accepted merge reaching the engine as a copy with its resolved
+  paths.

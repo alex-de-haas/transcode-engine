@@ -33,11 +33,16 @@ public sealed record CreateJobRequest(
 
 /// <summary>
 /// A further file whose streams join the output — a sidecar dub or subtitle being merged into the video.
-/// Naming any turns the job into a merge: the video is stream-copied and the encode-only knobs are rejected,
-/// as they already are for <c>videoCodec: "copy"</c>. The path resolves against the media mount its label
-/// selects, defaulting to the primary input's mount, and must exist. At least one stream has to be selected,
-/// and selections are explicit absolute indexes within that file — the engine turns each into an output
-/// position, which it can only do from a known list.
+/// Naming any turns the job into a merge, which says nothing about the picture: the video follows
+/// <c>videoCodec</c> exactly as it does for any other job, so a merge may re-encode. What a merge changes is
+/// the <b>default</b> — omitting <c>videoCodec</c> copies the video, where an ordinary job would encode to
+/// HEVC — and the encode-only knobs (<c>maxHeight</c>, <c>crf</c>) are rejected whenever the video ends up
+/// copied, whether that was asked for or defaulted to.
+/// <para>
+/// The path resolves against the media mount its label selects, defaulting to the primary input's mount, and
+/// must exist. At least one stream has to be selected, and selections are explicit absolute indexes within
+/// that file — the engine turns each into an output position, which it can only do from a known list.
+/// </para>
 /// </summary>
 public sealed record AdditionalInputRequest(
     string? MountLabel,
