@@ -237,10 +237,11 @@ public sealed class TranscodeJobEndpointTests
     }
 
     [Fact]
-    public async Task Post_MergeWithEncodeOnlyKnob_ReturnsBadRequest()
+    public async Task Post_MergeWithEncodeOnlyKnobAndNoCodec_ReturnsBadRequest()
     {
-        // A merge is a stream copy by definition, so the encode-only options are as contradictory here as
-        // they already are for videoCodec: "copy" — and the caller never had to say "copy" to get one.
+        // A merge with no videoCodec still defaults to a copy, so the encode-only options are as
+        // contradictory here as they already are for an explicit videoCodec: "copy". Naming a real codec is
+        // what buys them — see Post_MergeThatReEncodes_IsAcceptedWithItsEncodeOnlyKnobs.
         var media = MediaWith("in.mkv", "dub.mka");
         var (client, app) = await HostAsync(Settings($"media={media}"), ITranscodeEngine.Imposter().Instance());
         await using var _ = app;
@@ -320,8 +321,10 @@ public sealed class TranscodeJobEndpointTests
     }
 
     [Fact]
-    public async Task Post_Merge_IsAcceptedAndReachesTheEngineAsACopy()
+    public async Task Post_MergeWithNoCodec_IsAcceptedAndReachesTheEngineAsACopy()
     {
+        // The default a merge keeps: re-encoding is the expensive, lossy direction, so omitting videoCodec
+        // must never buy one — least of all for a caller written before merges could carry a codec at all.
         var media = MediaWith("in.mkv", "dub.mka");
         var imposter = ITranscodeEngine.Imposter();
         TranscodeJobRequest? seen = null;
@@ -350,6 +353,66 @@ public sealed class TranscodeJobEndpointTests
         Assert.Equal(Path.Combine(media, "dub.mka"), additional.Path);
         var over = Assert.Single(seen.MetadataOverrides!);
         Assert.Equal("MVO wMedia", over.Title);
+    }
+
+    [Fact]
+    public async Task Post_MergeThatReEncodes_IsAcceptedWithItsEncodeOnlyKnobs()
+    {
+        // Appending tracks says nothing about what happens to the picture. Shrinking a remux while folding
+        // its dubs in used to be two passes over the same gigabytes; naming a codec makes it one job, and the
+        // encode-only knobs stop being contradictory the moment the video is actually being encoded.
+        var media = MediaWith("in.mkv", "dub.mka");
+        var imposter = ITranscodeEngine.Imposter();
+        TranscodeJobRequest? seen = null;
+        imposter.CreateAsync(Arg<TranscodeJobRequest>.Any(), Arg<CancellationToken>.Any())
+            .Returns((TranscodeJobRequest request, CancellationToken _) =>
+            {
+                seen = request;
+                return Task.FromResult(Descriptor);
+            });
+        var (client, app) = await HostAsync(Settings($"media={media}"), imposter.Instance());
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync("/jobs", new
+        {
+            inputMountLabel = "media",
+            inputPath = "in.mkv",
+            outputPath = "out.mkv",
+            videoCodec = "hevc",
+            maxHeight = 1080,
+            crf = 24,
+            audioStreamIndexes = new[] { 1 },
+            additionalInputs = new[] { new { path = "dub.mka", audioStreamIndexes = new[] { 0 } } },
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.False(seen!.CopyVideo);
+        Assert.Equal(TranscodeVideoCodec.Hevc, seen.VideoCodec);
+        Assert.Equal(1080, seen.MaxHeight);
+        Assert.Equal(24, seen.Crf);
+        Assert.Equal(Path.Combine(media, "dub.mka"), Assert.Single(seen.AdditionalInputs!).Path);
+    }
+
+    [Fact]
+    public async Task Post_MergeWithExplicitCopy_StillRefusesEncodeOnlyKnobs()
+    {
+        // The refusals moved from "is a merge" to "is a copy", so an explicit copy keeps them either way.
+        var media = MediaWith("in.mkv", "dub.mka");
+        var (client, app) = await HostAsync(Settings($"media={media}"), ITranscodeEngine.Imposter().Instance());
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync("/jobs", new
+        {
+            inputMountLabel = "media",
+            inputPath = "in.mkv",
+            outputPath = "out.mkv",
+            videoCodec = "copy",
+            crf = 24,
+            additionalInputs = new[] { new { path = "dub.mka", audioStreamIndexes = new[] { 0 } } },
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("crf", (await response.Content.ReadFromJsonAsync<ErrorBody>())!.Error);
     }
 
     [Fact]

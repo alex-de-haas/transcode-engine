@@ -28,12 +28,18 @@ public static class TranscodeEndpoints
             }
 
             // "copy" remuxes the video untouched; the codec/hardware/crf/height knobs are then irrelevant.
-            // Naming additional inputs makes the job a merge, which is a stream copy by definition — so it
-            // implies the same thing and rejects the same knobs.
+            //
+            // Naming additional inputs no longer implies it. Appending tracks from other files says nothing
+            // about what happens to the video, and shrinking a remux while folding its dubs in is one job,
+            // not two passes over the same gigabytes — so a merge may carry a real codec.
+            //
+            // What a merge keeps is the *default*: with no videoCodec at all it still copies, where an
+            // ordinary job would encode to HEVC. Re-encoding is the expensive, lossy direction and must never
+            // be what a caller gets by omission — least of all one written against the old rule.
             var additionalInputs = request.AdditionalInputs ?? [];
             var isMerge = additionalInputs.Count > 0;
-            var copyVideo = isMerge ||
-                string.Equals(request.VideoCodec?.Trim(), "copy", StringComparison.OrdinalIgnoreCase);
+            var copyVideo = string.Equals(request.VideoCodec?.Trim(), "copy", StringComparison.OrdinalIgnoreCase) ||
+                (isMerge && string.IsNullOrWhiteSpace(request.VideoCodec));
 
             var codec = TranscodeVideoCodec.Hevc;
             if (!copyVideo && !TryParseCodec(request.VideoCodec, out codec))

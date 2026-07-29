@@ -21,12 +21,14 @@ public sealed class MergeJobArgumentTests
         IReadOnlyList<int>? primarySubtitles = null,
         IReadOnlyList<StreamMetadataOverride>? overrides = null,
         int? defaultAudio = null,
-        string output = "/out/movie.mkv") =>
+        string output = "/out/movie.mkv",
+        bool copyVideo = true,
+        int? maxHeight = null) =>
         new(
             "job-1",
             new TranscodeJobRequest(
                 "/in/movie.mkv", output, TranscodeVideoCodec.Hevc, TranscodeHardware.None, null,
-                CopyVideo: true, MaxHeight: null, AudioStreamIndexes: primaryAudio,
+                CopyVideo: copyVideo, MaxHeight: maxHeight, AudioStreamIndexes: primaryAudio,
                 SubtitleStreamIndexes: primarySubtitles, DefaultAudioStreamIndex: defaultAudio,
                 DefaultSubtitleStreamIndex: null, AdditionalInputs: inputs, MetadataOverrides: overrides),
             durationSeconds: null);
@@ -97,6 +99,23 @@ public sealed class MergeJobArgumentTests
         Assert.Equal("copy", ValueAfter(args, "-c:v"));
         Assert.Equal("copy", ValueAfter(args, "-c:a"));
         Assert.Equal("copy", ValueAfter(args, "-c:s"));
+    }
+
+    [Fact]
+    public void A_merge_that_re_encodes_encodes_the_video_and_still_copies_the_tracks_it_appends()
+    {
+        // Appending tracks says nothing about what happens to the picture: shrinking a remux while folding
+        // its dubs in is one pass, not two over the same gigabytes. Only the video is encoded — an appended
+        // track is copied exactly as it arrives, which is the whole point of keeping it as a file.
+        var args = Engine().BuildArguments(
+            Merge([new AdditionalInput("/in/dub.mka", [0])], primaryAudio: [1], copyVideo: false, maxHeight: 1080),
+            TranscodeHardware.None);
+
+        Assert.NotEqual("copy", ValueAfter(args, "-c:v"));
+        Assert.Equal("copy", ValueAfter(args, "-c:a"));
+        Assert.Equal(["/in/movie.mkv", "/in/dub.mka"], Inputs(args));
+        // No subtitle selection was made, so they keep the "every subtitle of the primary" mapping.
+        Assert.Equal(["0:v:0", "0:1", "1:0", "0:s?", "0:t?"], MapTargets(args));
     }
 
     [Fact]
