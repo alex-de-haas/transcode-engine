@@ -1,8 +1,7 @@
 # Hardware Acceleration
 
-Status: Implemented
 Created: 2026-07-03
-Updated: 2026-07-22
+Updated: 2026-08-06
 
 ## Description
 
@@ -29,8 +28,8 @@ hardware is really in effect.
 | **AMF** (AMD, Windows) | `local` (native) | The engine runs natively on Windows; the host's `ffmpeg` hardware-decodes on the AMD VCN via D3D11VA and encodes with `*_amf`. The path for AMD on Windows, where VAAPI does not exist. |
 | **Software** (libx264 / libx265) | `docker` (default), or any fallback | No hardware needed. Starts on any host, including macOS Docker Desktop. |
 
-See [Hosty runtime app](hosty-runtime-app.md#runtime-profiles) for the profiles and
-[Build and deployment](build-and-deployment.md#running-under-each-runtime) for how to
+See [Hosty runtime app](../hosty-runtime-app.md#runtime-profiles) for the profiles and
+[Build and deployment](../build-and-deployment.md#running-under-each-runtime) for how to
 launch each.
 
 ## The host probe (`HardwareProbe`)
@@ -85,7 +84,7 @@ encoder and wires the right scaler for an optional `maxHeight` downscale:
 
 | Hardware | h264 | hevc | Decode / scale |
 | --- | --- | --- | --- |
-| VAAPI | `h264_vaapi` | `hevc_vaapi` | Software-decode → `format=nv12,hwupload` → `scale_vaapi` on the GPU. The proven chain, most compatible across arbitrary inputs. |
+| VAAPI | `h264_vaapi` | `hevc_vaapi` | Software-decode → `format=<nv12\|p010>,hwupload` → `scale_vaapi` on the GPU. The proven chain, most compatible across arbitrary inputs; the upload format tracks the source depth (below). |
 | VideoToolbox | `h264_videotoolbox` | `hevc_videotoolbox` | System-memory frames; CPU `scale=-2:H`. |
 | AMF | `h264_amf` | `hevc_amf` | D3D11VA hardware-decode with `-hwaccel_output_format` unset, so the decoder downloads each surface into its own software format (`nv12` / `p010`) → CPU `scale=-2:H`. |
 | Software | `libx264` | `libx265` | CPU decode + `scale=-2:H`. |
@@ -110,26 +109,103 @@ job that lands on another encoder than it expected keeps asking for the same pic
 | VideoToolbox | `-q:v N`, on an inverted scale where higher is better. Not available on every host; where it is missing the job fails rather than encoding at the driver default. |
 
 The level → value tables and the measurements behind them are in
-[Compression controls](compression-controls/feature.md). The short version:
+[Compression controls](../compression-controls/feature.md). The short version:
 software and AMF came out equivalent in quality per byte at a 30–70× speed
 difference, so hardware is a legitimate choice for shrinking a file, not only for
 finishing sooner.
+
+## Bit depth on the VAAPI upload
+
+The format named before `hwupload` becomes the VAAPI surface's `sw_format`, and with
+it the depth the encoder is handed — the conversion happens in software, in the filter
+graph, *before* any frame reaches the GPU. So `format=nv12` is an unconditional
+truncation to 8 bit, and on a 10-bit HDR source it costs a bit of depth silently: the
+job succeeds, `effectiveHardware` still says `vaapi`, and the only symptom is banding
+on the gradients HDR material is full of.
+
+The upload format therefore follows the source, which `CreateAsync` reads from the
+primary video stream's `pix_fmt` at job-creation time and the job carries into
+`BuildArguments`:
+
+| Source | Target codec | Upload | Profile |
+| --- | --- | --- | --- |
+| deeper than 8-bit (`yuv420p10le`, `p010le`, …) | `hevc` | `format=p010` | `-profile:v main10` |
+| deeper than 8-bit | `h264` | `format=nv12` | encoder default |
+| 8-bit, or a `pix_fmt` the probe could not read | either | `format=nv12` | encoder default |
+
+Two deliberate limits:
+
+- **H.264 stays 8-bit.** No shipping VAAPI driver exposes an H.264 High 10 *encode*
+  entrypoint, so uploading `p010` there would turn a job that works today into a hard
+  "no usable encoding profile" failure. A caller who wants the 10 bits asks for HEVC.
+- **An unrecognised `pix_fmt` reads as 8-bit** (`SourceBitDepth`), so a format the
+  parser does not model can only ever keep the pre-existing `nv12` path, never
+  mis-select `p010`.
+
+## The Main 10 capability probe
+
+A render node is not a promise of Main 10: an Intel GPU before Kaby Lake exposes a
+perfectly good VAAPI device whose HEVC encoder is Main-only. That is the one hardware
+question `HardwareProbe.Detect` cannot answer from the filesystem, and getting it wrong
+either way is bad — a hard encoder-init failure breaks the "hardware degrades to
+software" guarantee, and silently truncating to 8 bit is the bug this section exists
+to fix.
+
+So a job that would ask for Main 10 (`NeedsVaapiTenBit`: a VAAPI *re-encode* of a
+deeper-than-8-bit source to HEVC — never a remux, an 8-bit source, or H.264) first
+checks the capability, and falls back to software when the answer is no:
+
+```text
+Job …: VAAPI is available but its HEVC encoder cannot do Main 10, and the source is
+yuv420p10le; falling back to software so the encode keeps its bit depth.
+```
+
+The check is a throwaway encode of a few generated frames through the exact chain a
+real job would use — `format=p010,hwupload` → `hevc_vaapi -profile:v main10` — and it
+passes only when ffmpeg exits cleanly. A driver self-report (`vainfo`) would be
+cheaper but less conclusive; this fails exactly when the job would have failed.
+Anything else — a Main-only encoder, a wedged device, an ffmpeg that will not start, a
+probe that outruns its 20s timeout — reads as "no Main 10", which costs speed but never
+correctness.
+
+It runs at most once per process, lazily: a host that never submits a 10-bit HEVC job
+never spawns it, and one that does pays for it on the first such job only. This is the
+only probe that spawns a process, which is why it lives on the engine rather than in
+`HardwareProbe` — `GET /hardware` stays free of it and keeps reporting device presence,
+while the job's `effectiveHardware` reports `software` whenever this fallback fires.
 
 ## Why hardware is opportunistic but honest
 
 ffmpeg errors out if it cannot initialise a `*_vaapi` / `*_videotoolbox` / `*_amf`
 device — it never silently falls back to software mid-run. So a job whose
 `effectiveHardware` is a hardware family **and** reaches `Completed` definitely used
-hardware. The engine's own fallback happens *before* the run (in `ResolveHardware`),
-which is why the per-job log line and `effectiveHardware` snapshot field report the
-resolved encoder rather than the requested one.
+hardware. Every fallback the engine performs happens *before* the run — in
+`ResolveHardware` for a family the host cannot reach, and in the Main 10 check above
+for a capability the render node does not imply — and both land before `job.Start`,
+which is why the per-job log line and the `effectiveHardware` snapshot field report
+the encoder actually used rather than the one requested.
 
 ## Testing Expectations
 
 Backend tests use xUnit and Imposter. The scaler/encoder wiring is unit-testable
 through the pure `BuildArguments` (VAAPI GPU scale vs. software CPU scale, copy
-bypassing hwaccel — see [Transcode engine](transcode-engine.md#testing-expectations)),
+bypassing hwaccel, and the `nv12`/`p010` upload choice with its `main10` profile — see
+[Transcode engine](../transcode-engine/feature.md#testing-expectations)),
 as is the `HWACCEL` value parsing (`TranscodeEngineSettingsTests.ParseHardware`, incl.
-aliases and unknown → null). The actual device init and encode
-(`Detect` against real `/dev/dri`, VideoToolbox/AMF availability) depends on real host
-hardware and is validated at the runtime level, not by unit tests.
+aliases and unknown → null). `NeedsVaapiTenBit` — which decides whether the Main 10
+capability probe is consulted at all — is pure and unit-tested across remux, depth,
+codec and hardware family. The actual device init and encode (`Detect` against real
+`/dev/dri`, the capability probe's verdict, VideoToolbox/AMF availability) depends on
+real host hardware and is validated at the runtime level, not by unit tests.
+
+The upload-format change is verified end-to-end by encoding a 10-bit HDR sample on a
+host with a `/dev/dri` render node and reading the result back:
+
+```bash
+ffprobe -v error -select_streams v:0 -show_entries stream=pix_fmt,profile -of default=nw=1 <output>
+```
+
+`yuv420p10le` / `Main 10` is the fixed behaviour; `yuv420p` / `Main` is the bug. The
+software half of the chain — that `format=nv12` truncates a `yuv420p10le` decode to 8
+bit *before* `hwupload`, which is where the depth is actually lost — reproduces on any
+host, with no render node, by running the same `-vf` against a software encoder.

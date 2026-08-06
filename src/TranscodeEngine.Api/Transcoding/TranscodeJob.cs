@@ -31,16 +31,27 @@ internal sealed class TranscodeJob
     private long _outputSize;
     private DateTimeOffset? _completedAt;
 
-    public TranscodeJob(string jobId, TranscodeJobRequest request, double? durationSeconds)
+    public TranscodeJob(
+        string jobId,
+        TranscodeJobRequest request,
+        double? durationSeconds,
+        string? sourcePixelFormat = null)
     {
         JobId = jobId;
         Request = request;
         _durationSeconds = durationSeconds;
+        SourcePixelFormat = sourcePixelFormat;
     }
 
     public string JobId { get; }
 
     public TranscodeJobRequest Request { get; }
+
+    /// <summary>The primary video stream's ffmpeg pixel format as reported by the create-time ffprobe
+    /// (<c>yuv420p10le</c> and friends), or <c>null</c> when the probe could not read one. The encode chain
+    /// reads it to size the hardware upload format to the source's bit depth; a null keeps the 8-bit
+    /// default.</summary>
+    public string? SourcePixelFormat { get; }
 
     /// <summary>Set true on cancel/remove; the worker checks it after the process exits.</summary>
     public volatile bool CancelRequested;

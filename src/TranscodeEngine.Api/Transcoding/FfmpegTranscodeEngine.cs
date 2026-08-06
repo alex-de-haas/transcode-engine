@@ -21,6 +21,10 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
     // Hard cap on the ffprobe duration probe so the same kind of special/blocked file can't hang CreateAsync.
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(30);
 
+    // Hard cap on the one-shot Main 10 capability encode. Generous, because it pays for the first VAAPI
+    // device init of the process, but bounded so a wedged driver downgrades the job instead of hanging it.
+    private static readonly TimeSpan CapabilityProbeTimeout = TimeSpan.FromSeconds(20);
+
     // Terminal jobs are kept this long (and at most this many) so a late GET /jobs poll still sees them,
     // then evicted — otherwise the in-memory dictionary (and the SSE snapshot list) grows without bound.
     private static readonly TimeSpan TerminalJobRetention = TimeSpan.FromHours(1);
@@ -41,6 +45,11 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
     private readonly Channel<string> _queue = Channel.CreateBounded<string>(
         new BoundedChannelOptions(MaxQueuedJobs) { FullMode = BoundedChannelFullMode.Wait });
 
+    // Whether this host's VAAPI encoder can actually do HEVC Main 10, established once by a throwaway
+    // encode. Lazy so a host that never runs a 10-bit job never spawns it, and cached because the answer is
+    // a property of the driver, not of the job.
+    private readonly Lazy<bool> _vaapiTenBitSupported;
+
     private CancellationTokenSource? _cts;
     private Task[] _workers = [];
 
@@ -48,6 +57,7 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
     {
         _settings = settings;
         _logger = logger;
+        _vaapiTenBitSupported = new Lazy<bool>(ProbeVaapiTenBitSupport, LazyThreadSafetyMode.ExecutionAndPublication);
     }
 
     public event EventHandler<string>? JobStarted;
@@ -100,11 +110,12 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
 
     public async Task<JobDescriptor> CreateAsync(TranscodeJobRequest request, CancellationToken cancellationToken)
     {
-        var duration = await ProbeDurationAsync(request.InputPath, cancellationToken);
+        var source = await ProbeSourceAsync(request.InputPath, cancellationToken);
+        var duration = source.DurationSeconds;
         var inputSize = TryFileLength(request.InputPath);
 
         var jobId = Guid.NewGuid().ToString("n");
-        var job = new TranscodeJob(jobId, request, duration);
+        var job = new TranscodeJob(jobId, request, duration, source.VideoPixelFormat);
         _jobs[jobId] = job;
 
         if (!_queue.Writer.TryWrite(jobId))
@@ -201,6 +212,21 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         }
 
         var hardware = ResolveHardware(job.Request.HardwareAcceleration);
+
+        // A 10-bit VAAPI encode is the one hardware choice the render-node check above cannot vouch for:
+        // the node exists, but the driver's HEVC encoder may be Main-only (Intel before Kaby Lake). Rather
+        // than let ffmpeg hard-fail on encoder init — or silently truncate to 8 bit, which was the bug this
+        // path exists to fix — check the capability once and degrade to software, keeping the promise that
+        // hardware the host cannot satisfy falls back with a warning.
+        if (NeedsVaapiTenBit(job.Request, hardware, job.SourcePixelFormat) && !_vaapiTenBitSupported.Value)
+        {
+            _logger.LogWarning(
+                "Job {JobId}: VAAPI is available but its HEVC encoder cannot do Main 10, and the source is " +
+                "{PixelFormat}; falling back to software so the encode keeps its bit depth.",
+                job.JobId, job.SourcePixelFormat);
+            hardware = TranscodeHardware.None;
+        }
+
         job.Start(hardware);
         JobStarted?.Invoke(this, job.JobId);
 
@@ -524,7 +550,7 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         }
         else
         {
-            AddVideoEncode(args, request, hardware);
+            AddVideoEncode(args, request, hardware, job.SourcePixelFormat);
         }
 
         AddAudioCodecs(args, audio, request.AudioTargets);
@@ -661,8 +687,17 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
     /// VideoToolbox's inverted 1–100 quality — and <see cref="QualityLevels"/> owns the translation. Emitting
     /// nothing (the previous behaviour on every hardware path) left the driver to pick, which meant a
     /// consumer could not ask for a smaller file at all.
+    /// </para>
+    /// <para>
+    /// <paramref name="sourcePixelFormat"/> is the decoded source's depth, which only the VAAPI path reads:
+    /// the format it uploads becomes the surface's <c>sw_format</c>, so it decides whether the encoder is
+    /// handed 10-bit or truncated 8-bit frames.
     /// </para></summary>
-    private void AddVideoEncode(List<string> args, TranscodeJobRequest request, TranscodeHardware hardware)
+    private void AddVideoEncode(
+        List<string> args,
+        TranscodeJobRequest request,
+        TranscodeHardware hardware,
+        string? sourcePixelFormat)
     {
         var height = request.MaxHeight;
         var level = request.QualityLevel ?? QualityLevels.Default;
@@ -670,16 +705,29 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         switch (hardware)
         {
             case TranscodeHardware.Vaapi:
+                // The upload format is the surface's sw_format, and therefore the depth the encoder sees: a
+                // hardcoded nv12 converts every 10-bit source to 8 bit in software *before* hwupload, which
+                // is invisible in the output except as banding on the gradients HDR material is full of.
+                var tenBit = UsesTenBitVaapiUpload(codec, sourcePixelFormat);
+                var upload = tenBit ? "p010" : "nv12";
                 args.Add("-vf");
                 args.Add(height is { } h
-                    ? $"format=nv12,hwupload,scale_vaapi=w=-2:h={h.ToString(CultureInfo.InvariantCulture)}"
-                    : "format=nv12,hwupload");
+                    ? $"format={upload},hwupload,scale_vaapi=w=-2:h={h.ToString(CultureInfo.InvariantCulture)}"
+                    : $"format={upload},hwupload");
                 args.Add("-c:v");
                 args.Add(VaapiEncoder(codec));
                 args.Add("-rc_mode");
                 args.Add("CQP");
                 args.Add("-qp");
                 args.Add(Number(QualityLevels.HardwareQp(level, codec)));
+                if (tenBit)
+                {
+                    // vaapi_encode derives the profile from the surface format, but naming it keeps a driver
+                    // that would rather offer Main from quietly winning the negotiation.
+                    args.Add("-profile:v");
+                    args.Add("main10");
+                }
+
                 break;
             case TranscodeHardware.VideoToolbox:
                 AddCpuScale(args, height);
@@ -717,6 +765,142 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
                 args.Add(Number(QualityLevels.SoftwareCrf(level, codec)));
                 break;
         }
+    }
+
+    /// <summary>
+    /// Whether the VAAPI chain uploads <c>p010</c> (10-bit surfaces) rather than <c>nv12</c>. True only for a
+    /// deeper-than-8-bit source encoded to HEVC: no shipping VAAPI driver exposes an H.264 High 10 *encode*
+    /// entrypoint, so uploading p010 for H.264 would turn today's working (if 8-bit) job into a hard
+    /// "no usable encoding profile" failure. An unreadable or unrecognised source format keeps nv12 — the
+    /// behaviour every input had before, which is the safe direction to be wrong in.
+    /// </summary>
+    internal static bool UsesTenBitVaapiUpload(TranscodeVideoCodec codec, string? sourcePixelFormat) =>
+        codec == TranscodeVideoCodec.Hevc && SourceBitDepth(sourcePixelFormat) > 8;
+
+    /// <summary>Whether this job would ask the VAAPI encoder for Main 10 — the only case whose capability the
+    /// render-node check cannot answer, and so the only one that needs the pre-flight probe. A remux never
+    /// touches the encoder, and every 8-bit or H.264 job stays on the nv12 path every driver supports.</summary>
+    internal static bool NeedsVaapiTenBit(
+        TranscodeJobRequest request,
+        TranscodeHardware hardware,
+        string? sourcePixelFormat) =>
+        hardware == TranscodeHardware.Vaapi &&
+        !request.CopyVideo &&
+        UsesTenBitVaapiUpload(request.VideoCodec, sourcePixelFormat);
+
+    /// <summary>
+    /// Asks the host's own VAAPI encoder whether it can do HEVC Main 10, by encoding a few frames of
+    /// generated video through the exact chain a real job would use and checking that ffmpeg exits cleanly.
+    /// A driver self-report (<c>vainfo</c>) would be cheaper but less conclusive; this fails exactly when the
+    /// job would have failed. Anything other than a clean exit — a Main-only encoder, a wedged device, an
+    /// ffmpeg that will not start, a probe that outruns its timeout — reads as "no Main 10", which costs
+    /// speed (the job runs in software) but never correctness.
+    /// </summary>
+    private bool ProbeVaapiTenBitSupport()
+    {
+        var device = _settings.VaapiDevice;
+        try
+        {
+            var psi = new ProcessStartInfo(_settings.FfmpegPath)
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            };
+            foreach (var arg in new[]
+            {
+                "-hide_banner", "-nostdin", "-loglevel", "error",
+                "-vaapi_device", device,
+                // 256x256 clears the minimum dimensions VAAPI HEVC encoders impose; three frames is enough
+                // to get past encoder init, which is where a Main-only driver refuses.
+                "-f", "lavfi", "-i", "color=black:s=256x256:r=25:d=0.12",
+                "-vf", "format=p010,hwupload",
+                "-c:v", "hevc_vaapi", "-profile:v", "main10",
+                "-f", "null", "-",
+            })
+            {
+                psi.ArgumentList.Add(arg);
+            }
+
+            using var process = Process.Start(psi);
+            if (process is null)
+            {
+                return false;
+            }
+
+            // Drain both pipes before waiting: a probe that fills one would otherwise block forever.
+            var stderr = process.StandardError.ReadToEndAsync();
+            _ = process.StandardOutput.ReadToEndAsync();
+            if (!process.WaitForExit((int)CapabilityProbeTimeout.TotalMilliseconds))
+            {
+                TryKillProcess(process);
+                _logger.LogWarning(
+                    "The VAAPI Main 10 capability probe on {Device} did not finish within {Timeout}; " +
+                    "treating the encoder as 8-bit only.", device, CapabilityProbeTimeout);
+                return false;
+            }
+
+            var supported = process.ExitCode == 0;
+            if (supported)
+            {
+                _logger.LogInformation("VAAPI on {Device} encodes HEVC Main 10; 10-bit sources keep their depth.", device);
+            }
+            else
+            {
+                var error = string.Join(" | ", stderr.Result
+                    .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .TakeLast(3));
+                _logger.LogInformation(
+                    "VAAPI on {Device} cannot encode HEVC Main 10 (ffmpeg exit {Code}); 10-bit sources will " +
+                    "run in software. {Error}",
+                    device, process.ExitCode, error);
+            }
+
+            return supported;
+        }
+        catch (Exception exception)
+        {
+            // Best-effort, exactly like the other host probes: never let this crash a job.
+            _logger.LogWarning(exception, "The VAAPI Main 10 capability probe on {Device} failed; treating the encoder as 8-bit only.", device);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Bits per component of an ffmpeg pixel format name. The depth is the digit run right after the last
+    /// <c>p</c> (the planar marker), with the endianness suffix stripped first: <c>yuv420p10le</c> → 10,
+    /// <c>p010le</c> → 10, <c>yuv420p</c> → 8. Anything without that shape — <c>nv12</c>, <c>rgb24</c>,
+    /// <c>yuyv422</c>, whose digits are a subsampling/packing code rather than a depth — reads as 8, so a
+    /// format this does not model can only ever keep the pre-existing nv12 path, never mis-select p010.
+    /// </summary>
+    internal static int SourceBitDepth(string? pixelFormat)
+    {
+        if (pixelFormat is not { Length: > 0 } name)
+        {
+            return 8;
+        }
+
+        var trimmed = name.EndsWith("le", StringComparison.OrdinalIgnoreCase) ||
+                      name.EndsWith("be", StringComparison.OrdinalIgnoreCase)
+            ? name[..^2]
+            : name;
+
+        var planar = trimmed.LastIndexOf('p');
+        if (planar < 0)
+        {
+            return 8;
+        }
+
+        var end = planar + 1;
+        while (end < trimmed.Length && char.IsAsciiDigit(trimmed[end]))
+        {
+            end++;
+        }
+
+        return end > planar + 1 &&
+               int.TryParse(trimmed[(planar + 1)..end], NumberStyles.Integer, CultureInfo.InvariantCulture, out var depth)
+            ? depth
+            : 8;
     }
 
     private static string Number(int value) => value.ToString(CultureInfo.InvariantCulture);
@@ -893,7 +1077,13 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         _ => "software",
     };
 
-    private async Task<double?> ProbeDurationAsync(string inputPath, CancellationToken cancellationToken)
+    /// <summary>What the create-time ffprobe learns about the input: the duration progress percentages are
+    /// computed from, and the primary video stream's pixel format, which decides the bit depth the VAAPI
+    /// chain uploads at. Either field is null when ffprobe could not report it (an audio-only merge source
+    /// has no <c>pix_fmt</c>); both callers degrade rather than fail.</summary>
+    internal readonly record struct SourceProbe(double? DurationSeconds, string? VideoPixelFormat);
+
+    private async Task<SourceProbe> ProbeSourceAsync(string inputPath, CancellationToken cancellationToken)
     {
         // Bound the probe so a FIFO/special file or a blocked read can't hang CreateAsync forever.
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -912,8 +1102,13 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
             foreach (var arg in new[]
             {
                 "-v", "quiet",
-                "-show_entries", "format=duration",
-                "-of", "default=noprint_wrappers=1:nokey=1",
+                // Only the primary video stream's pix_fmt matters (BuildArguments maps 0:v:0); -select_streams
+                // does not touch the format section, so the duration still comes back.
+                "-select_streams", "v:0",
+                "-show_entries", "format=duration:stream=pix_fmt",
+                // Keys are kept (no nokey=1): the two entries live in different sections, so the output is
+                // parsed by name rather than by line order.
+                "-of", "default=noprint_wrappers=1",
                 inputPath,
             })
             {
@@ -923,14 +1118,14 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
             using var process = Process.Start(psi);
             if (process is null)
             {
-                return null;
+                return default;
             }
 
             try
             {
                 var stdout = await process.StandardOutput.ReadToEndAsync(probeToken);
                 await process.WaitForExitAsync(probeToken);
-                return double.TryParse(stdout.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds) ? seconds : null;
+                return ParseSourceProbe(stdout);
             }
             catch (OperationCanceledException)
             {
@@ -943,14 +1138,44 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         {
             // Our own timeout fired (not a client cancel) — fall back to byte-only progress rather than
             // hanging or failing the create.
-            _logger.LogWarning("Probing the duration of {Input} timed out after {Timeout}; progress will be byte-only.", inputPath, ProbeTimeout);
-            return null;
+            _logger.LogWarning("Probing {Input} timed out after {Timeout}; progress will be byte-only.", inputPath, ProbeTimeout);
+            return default;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            _logger.LogWarning(exception, "Could not probe duration of {Input}; progress will be byte-only.", inputPath);
-            return null;
+            _logger.LogWarning(exception, "Could not probe {Input}; progress will be byte-only.", inputPath);
+            return default;
         }
+    }
+
+    /// <summary>Reads ffprobe's <c>key=value</c> lines. A key ffprobe did not emit stays null — an
+    /// audio-only input reports no <c>pix_fmt</c>, and a stream-less file reports no <c>duration</c>.</summary>
+    internal static SourceProbe ParseSourceProbe(string stdout)
+    {
+        double? duration = null;
+        string? pixelFormat = null;
+        foreach (var line in stdout.Split('\n'))
+        {
+            var separator = line.IndexOf('=');
+            if (separator <= 0)
+            {
+                continue;
+            }
+
+            var key = line[..separator].Trim();
+            var value = line[(separator + 1)..].Trim();
+            switch (key)
+            {
+                case "duration" when double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds):
+                    duration = seconds;
+                    break;
+                case "pix_fmt" when value.Length > 0 && value != "unknown":
+                    pixelFormat = value;
+                    break;
+            }
+        }
+
+        return new SourceProbe(duration, pixelFormat);
     }
 
     private static long? TryFileLength(string path)

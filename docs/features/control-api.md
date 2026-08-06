@@ -52,7 +52,7 @@ else falls back to an engine default:
 | `inputMountLabel` | string? | Selects the media mount the input resolves against. Required when several mounts are configured; optional with exactly one. See [Media mounts](media-mounts.md). |
 | `outputMountLabel` | string? | Media mount for the output. Defaults to `inputMountLabel` when omitted. |
 | `videoCodec` | string? | `h264`, `hevc` (default), or `copy` (remux the video untouched). Aliases: `h265`/`x265` → hevc, `avc`/`x264` → h264. **Defaults to `copy` on a merge** — see `additionalInputs`. |
-| `hardwareAcceleration` | string? | `auto` (default), `vaapi`, `videotoolbox`, `amf`, or `none`. A choice the host can't satisfy falls back to software. See [Hardware acceleration](hardware-acceleration.md). |
+| `hardwareAcceleration` | string? | `auto` (default), `vaapi`, `videotoolbox`, `amf`, or `none`. A choice the host can't satisfy falls back to software — including a 10-bit HEVC job on a VAAPI device whose encoder is Main-only. See [Hardware acceleration](hardware-acceleration/feature.md). |
 | `qualityLevel` | string? | `highest`, `high` (default), `balanced`, or `small`. Encoder-independent: the engine maps it onto whichever family the host reaches, so the same level means the same picture everywhere. See [Compression controls](compression-controls/feature.md). |
 | `maxHeight` | int? | Downscale to this height (aspect kept, never upscales), `16`–`4320`. Omit to keep the source resolution. |
 | `audioStreamIndexes` | int[]? | Absolute input stream indices to keep, in output order. Omit to copy **all** audio. |
@@ -69,7 +69,7 @@ range-checks `maxHeight`, rejects negative stream indices, rejects encode-only k
 `videoCodec: copy` or defaulted to by a merge that named none — requires a
 chosen default track to be in its explicit index list, and rejects a subtitle
 selection for a non-`.mkv` output (subtitles ride only in Matroska — see
-[Transcode engine](transcode-engine.md#ffmpeg-argument-construction)). It then
+[Transcode engine](transcode-engine/feature.md#ffmpeg-argument-construction)). It then
 resolves the input/output paths against the media mounts (an unknown `mountLabel` or
 an off-mount path is a `400`), checks the input exists, and checks output ≠ input —
 only then does it hand off to the engine, which probes duration and enqueues.
@@ -107,7 +107,7 @@ the job up:
 effect — a job that reports `vaapi` / `videotoolbox` / `amf` **and** completes
 definitely used hardware, since ffmpeg errors out if it cannot initialise the device
 rather than silently dropping to software. See
-[Transcode engine](transcode-engine.md#snapshot-and-progress-derivation) for how
+[Transcode engine](transcode-engine/feature.md#snapshot-and-progress-derivation) for how
 these are derived.
 
 ## SSE event stream (`GET /events`)
@@ -159,7 +159,7 @@ a consumer can surface what the host actually offers:
 | `amfAvailable` | bool | `true` only when the engine runs natively on Windows and the AMD driver's `amfrt64.dll` is present. |
 | `checkedAt` | DateTimeOffset | When the probe ran. |
 
-See [Hardware acceleration](hardware-acceleration.md) for how these map to the
+See [Hardware acceleration](hardware-acceleration/feature.md) for how these map to the
 runtime profiles.
 
 ## Error envelope
@@ -182,4 +182,4 @@ Required coverage:
 - Path resolution (label selection, traversal safety) is covered in
   [Media mounts](media-mounts.md).
 - The snapshot/argument derivations that back these responses are unit-tested in the
-  engine — see [Transcode engine](transcode-engine.md).
+  engine — see [Transcode engine](transcode-engine/feature.md).
