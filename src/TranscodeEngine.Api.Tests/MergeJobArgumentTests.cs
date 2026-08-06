@@ -196,7 +196,8 @@ public sealed class MergeJobArgumentTests
         var job = new TranscodeJob(
             "job-1",
             new TranscodeJobRequest(
-                "/in/movie.mkv", "/out/movie.mkv", TranscodeVideoCodec.Hevc, TranscodeHardware.None, 22,
+                "/in/movie.mkv", "/out/movie.mkv", TranscodeVideoCodec.Hevc, TranscodeHardware.None,
+                TranscodeQualityLevel.Balanced,
                 CopyVideo: false, MaxHeight: null, AudioStreamIndexes: [1, 2],
                 MetadataOverrides: [new StreamMetadataOverride(0, 1, Title: "Fixed")]),
             durationSeconds: null);

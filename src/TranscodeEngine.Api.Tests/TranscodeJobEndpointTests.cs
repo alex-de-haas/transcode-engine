@@ -385,7 +385,7 @@ public sealed class TranscodeJobEndpointTests
             outputPath = "out.mkv",
             videoCodec = "hevc",
             maxHeight = 1080,
-            crf = 24,
+            qualityLevel = "small",
             audioStreamIndexes = new[] { 1 },
             additionalInputs = new[] { new { path = "dub.mka", audioStreamIndexes = new[] { 0 } } },
         });
@@ -394,7 +394,7 @@ public sealed class TranscodeJobEndpointTests
         Assert.False(seen!.CopyVideo);
         Assert.Equal(TranscodeVideoCodec.Hevc, seen.VideoCodec);
         Assert.Equal(1080, seen.MaxHeight);
-        Assert.Equal(24, seen.Crf);
+        Assert.Equal(TranscodeQualityLevel.Small, seen.QualityLevel);
         Assert.Equal(Path.Combine(media, "dub.mka"), Assert.Single(seen.AdditionalInputs!).Path);
     }
 
@@ -412,15 +412,137 @@ public sealed class TranscodeJobEndpointTests
             inputPath = "in.mkv",
             outputPath = "out.mkv",
             videoCodec = "copy",
-            crf = 24,
+            qualityLevel = "small",
             additionalInputs = new[] { new { path = "dub.mka", audioStreamIndexes = new[] { 0 } } },
         });
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         var error = (await response.Content.ReadFromJsonAsync<ErrorBody>())!.Error;
-        Assert.Contains("crf", error);
+        Assert.Contains("qualityLevel", error);
         // Here the caller did write it, so the message names what they asked for.
         Assert.Contains("videoCodec is 'copy'", error);
+    }
+
+    [Fact]
+    public async Task Post_AudioTarget_ReachesTheEngine()
+    {
+        var media = MediaWith("in.mkv");
+        TranscodeJobRequest? seen = null;
+        var imposter = ITranscodeEngine.Imposter();
+        imposter.CreateAsync(Arg<TranscodeJobRequest>.Any(), Arg<CancellationToken>.Any())
+            .Returns((TranscodeJobRequest request, CancellationToken _) =>
+            {
+                seen = request;
+                return Task.FromResult(Descriptor);
+            });
+        var (client, app) = await HostAsync(Settings($"media={media}"), imposter.Instance());
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync("/jobs", new
+        {
+            inputMountLabel = "media",
+            inputPath = "in.mkv",
+            outputPath = "out.mkv",
+            videoCodec = "copy",
+            audioStreamIndexes = new[] { 1, 4 },
+            audioTargets = new[] { new { input = 0, streamIndex = 4, codec = "eac3", bitrate = 640 } },
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var target = Assert.Single(seen!.AudioTargets!);
+        Assert.Equal(TranscodeAudioCodec.Eac3, target.Codec);
+        Assert.Equal(4, target.StreamIndex);
+        Assert.Equal(640, target.BitrateKbps);
+        // Re-encoding audio says nothing about the picture: the cheapest useful conversion copies it.
+        Assert.True(seen.CopyVideo);
+    }
+
+    [Fact]
+    public async Task Post_AudioTargetForAnUnmappedStream_ReturnsBadRequest()
+    {
+        var media = MediaWith("in.mkv");
+        var (client, app) = await HostAsync(Settings($"media={media}"), ITranscodeEngine.Imposter().Instance());
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync("/jobs", new
+        {
+            inputMountLabel = "media",
+            inputPath = "in.mkv",
+            outputPath = "out.mkv",
+            videoCodec = "copy",
+            audioStreamIndexes = new[] { 1, 4 },
+            audioTargets = new[] { new { input = 0, streamIndex = 7, codec = "eac3" } },
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("maps explicitly", (await response.Content.ReadFromJsonAsync<ErrorBody>())!.Error);
+    }
+
+    [Fact]
+    public async Task Post_AudioTargetWithoutAnExplicitSelection_ReturnsBadRequest()
+    {
+        // "Copy every audio stream" expands to however many the file holds, so -c:a:N has no position to
+        // attach to and a target would silently re-encode whichever track happened to land there.
+        var media = MediaWith("in.mkv");
+        var (client, app) = await HostAsync(Settings($"media={media}"), ITranscodeEngine.Imposter().Instance());
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync("/jobs", new
+        {
+            inputMountLabel = "media",
+            inputPath = "in.mkv",
+            outputPath = "out.mkv",
+            videoCodec = "copy",
+            audioTargets = new[] { new { input = 0, streamIndex = 4, codec = "eac3" } },
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("audioStreamIndexes", (await response.Content.ReadFromJsonAsync<ErrorBody>())!.Error);
+    }
+
+    [Fact]
+    public async Task Post_AudioTargetWithAnUnsupportedCodec_ReturnsBadRequest()
+    {
+        var media = MediaWith("in.mkv");
+        var (client, app) = await HostAsync(Settings($"media={media}"), ITranscodeEngine.Imposter().Instance());
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync("/jobs", new
+        {
+            inputMountLabel = "media",
+            inputPath = "in.mkv",
+            outputPath = "out.mkv",
+            videoCodec = "copy",
+            audioStreamIndexes = new[] { 4 },
+            audioTargets = new[] { new { input = 0, streamIndex = 4, codec = "flac" } },
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("'flac'", (await response.Content.ReadFromJsonAsync<ErrorBody>())!.Error);
+    }
+
+    [Fact]
+    public async Task Post_UnknownQualityLevel_ReturnsBadRequestNamingTheAcceptedSet()
+    {
+        // Falling back to the default on an unrecognised spelling would encode gigabytes at a quality nobody
+        // asked for, and the caller would only find out by looking at the output.
+        var media = MediaWith("in.mkv");
+        var (client, app) = await HostAsync(Settings($"media={media}"), ITranscodeEngine.Imposter().Instance());
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync("/jobs", new
+        {
+            inputMountLabel = "media",
+            inputPath = "in.mkv",
+            outputPath = "out.mkv",
+            videoCodec = "hevc",
+            qualityLevel = "medium",
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var error = (await response.Content.ReadFromJsonAsync<ErrorBody>())!.Error;
+        Assert.Contains("'medium'", error);
+        Assert.Contains("balanced", error);
     }
 
     [Fact]

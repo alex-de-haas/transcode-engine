@@ -27,7 +27,7 @@ public static class TranscodeEndpoints
                 return Results.BadRequest(new { error = "outputPath is required." });
             }
 
-            // "copy" remuxes the video untouched; the codec/hardware/crf/height knobs are then irrelevant.
+            // "copy" remuxes the video untouched; the codec/hardware/quality/height knobs are then irrelevant.
             //
             // Naming additional inputs no longer implies it. Appending tracks from other files says nothing
             // about what happens to the video, and shrinking a remux while folding its dubs in is one job,
@@ -52,9 +52,15 @@ public static class TranscodeEndpoints
                 return Results.BadRequest(new { error = $"hardwareAcceleration '{request.HardwareAcceleration}' is not supported (use 'auto', 'vaapi', 'videotoolbox', 'amf' or 'none')." });
             }
 
-            if (request.Crf is < 0 or > 51)
+            TranscodeQualityLevel? qualityLevel = null;
+            if (!string.IsNullOrWhiteSpace(request.QualityLevel))
             {
-                return Results.BadRequest(new { error = "crf must be between 0 and 51." });
+                if (!QualityLevels.TryParse(request.QualityLevel, out var parsedLevel))
+                {
+                    return Results.BadRequest(new { error = $"qualityLevel '{request.QualityLevel}' is not supported (use {QualityLevels.Accepted})." });
+                }
+
+                qualityLevel = parsedLevel;
             }
 
             if (request.MaxHeight is not null and (< 16 or > 4320))
@@ -80,9 +86,9 @@ public static class TranscodeEndpoints
                 return Results.BadRequest(new { error = $"maxHeight cannot be set when {copyReason}." });
             }
 
-            if (copyVideo && request.Crf is not null)
+            if (copyVideo && qualityLevel is not null)
             {
-                return Results.BadRequest(new { error = $"crf cannot be set when {copyReason}." });
+                return Results.BadRequest(new { error = $"qualityLevel cannot be set when {copyReason}." });
             }
 
             // A chosen default needs its explicit (ordered) index list — that's how the engine turns the
@@ -137,6 +143,13 @@ public static class TranscodeEndpoints
             if (MetadataOverrideError(request, additionalInputs, matroskaOutput) is { } overrideError)
             {
                 return Results.BadRequest(new { error = overrideError });
+            }
+
+            // An audio target names a position the same way an override does, so it carries the same
+            // requirement: the track has to be one the job maps explicitly.
+            if (AudioTargetError(request, additionalInputs, out var audioTargets) is { } audioTargetError)
+            {
+                return Results.BadRequest(new { error = audioTargetError });
             }
 
             string inputPath;
@@ -194,7 +207,7 @@ public static class TranscodeEndpoints
                 outputPath,
                 codec,
                 hardware,
-                request.Crf,
+                qualityLevel,
                 copyVideo,
                 request.MaxHeight,
                 request.AudioStreamIndexes,
@@ -202,7 +215,8 @@ public static class TranscodeEndpoints
                 request.DefaultAudioStreamIndex,
                 request.DefaultSubtitleStreamIndex,
                 resolvedInputs.Count > 0 ? resolvedInputs : null,
-                request.MetadataOverrides?.Select(o => new StreamMetadataOverride(o.Input, o.StreamIndex, o.Language, o.Title)).ToList());
+                request.MetadataOverrides?.Select(o => new StreamMetadataOverride(o.Input, o.StreamIndex, o.Language, o.Title)).ToList(),
+                audioTargets);
             var descriptor = await engine.CreateAsync(jobRequest, ct);
             return Results.Ok(descriptor);
         });
@@ -387,6 +401,94 @@ public static class TranscodeEndpoints
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Validates every audio target and, on success, hands back the resolved list. A target re-encodes one
+    /// mapped track, so it addresses a stream exactly as a metadata override does and carries the same
+    /// requirement — the track must be explicitly mapped, because a "copy every stream of this type"
+    /// selection expands to however many the file holds and yields no position to attach <c>-c:a:N</c> to.
+    /// Returns an error message, or null when valid.
+    /// </summary>
+    private static string? AudioTargetError(
+        CreateJobRequest request,
+        IReadOnlyList<AdditionalInputRequest> additionalInputs,
+        out List<AudioTarget>? resolved)
+    {
+        resolved = null;
+        var targets = request.AudioTargets ?? [];
+        if (targets.Count == 0)
+        {
+            return null;
+        }
+
+        var seen = new HashSet<(int Input, int StreamIndex)>();
+        var result = new List<AudioTarget>(targets.Count);
+        foreach (var entry in targets)
+        {
+            if (!TryParseAudioCodec(entry.Codec, out var codec))
+            {
+                return $"audio target codec '{entry.Codec}' is not supported (use 'eac3' or 'ac3').";
+            }
+
+            if (entry.Bitrate is not null and (< 32 or > 1536))
+            {
+                return "audio target bitrate must be between 32 and 1536 kbps.";
+            }
+
+            if (entry.Input < 0 || entry.Input > additionalInputs.Count)
+            {
+                return $"audio target names input {entry.Input}, which this job does not have.";
+            }
+
+            if (entry.StreamIndex < 0)
+            {
+                return "stream indexes must be non-negative.";
+            }
+
+            // Two targets for one track cannot both be applied, and silently picking one would discard the
+            // caller's other instruction.
+            if (!seen.Add((entry.Input, entry.StreamIndex)))
+            {
+                return $"stream {entry.StreamIndex} of input {entry.Input} has more than one audio target.";
+            }
+
+            // Every position after an un-enumerated primary selection shifts by however many audio streams
+            // the file turns out to hold, so no target anywhere in the job is addressable without the list.
+            if (request.AudioStreamIndexes is null)
+            {
+                return "audioStreamIndexes must be listed explicitly when a job re-encodes an audio track.";
+            }
+
+            var streams = entry.Input == 0
+                ? request.AudioStreamIndexes
+                : additionalInputs[entry.Input - 1].AudioStreamIndexes;
+            if (streams?.Contains(entry.StreamIndex) != true)
+            {
+                return $"audio target for stream {entry.StreamIndex} of input {entry.Input} must name a stream the job maps explicitly.";
+            }
+
+            result.Add(new AudioTarget(entry.Input, entry.StreamIndex, codec, entry.Bitrate));
+        }
+
+        resolved = result;
+        return null;
+    }
+
+    private static bool TryParseAudioCodec(string? raw, out TranscodeAudioCodec codec)
+    {
+        switch (raw?.Trim().ToLowerInvariant())
+        {
+            case "eac3" or "e-ac-3" or "ddp":
+                codec = TranscodeAudioCodec.Eac3;
+                return true;
+            case "ac3" or "ac-3":
+                codec = TranscodeAudioCodec.Ac3;
+                return true;
+            default:
+                codec = default;
+                return false;
+        }
     }
 
     /// <summary>Validates a chosen default track: it requires the explicit index list (to map the absolute
