@@ -58,6 +58,10 @@ public sealed record ProbedStreamInfo(
     string? Title,
     bool IsDefault,
     bool IsForced,
+    /// <summary>This stream's own bitrate in bits per second, or null when the file does not state one.
+    /// Never derived from the file's overall rate: a consumer sizing one track needs a figure it can stand
+    /// behind, and a share of the whole is a guess.</summary>
+    int? Bitrate,
     int? Width,
     int? Height,
     double? FrameRate,

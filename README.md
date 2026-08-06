@@ -54,7 +54,7 @@ TODO (next chunks):
 ## Control API
 
 ```text
-POST   /jobs              { inputMountLabel?, inputPath, outputMountLabel?, outputPath, videoCodec?, hardwareAcceleration?, crf? } -> descriptor
+POST   /jobs              { inputMountLabel?, inputPath, outputMountLabel?, outputPath, videoCodec?, hardwareAcceleration?, qualityLevel?, audioTargets? } -> descriptor
 GET    /jobs
 GET    /jobs/{jobId}
 POST   /jobs/{jobId}/cancel
@@ -76,7 +76,11 @@ a missing input, or a path that escapes the root is a `400` so a job is never re
 - `hardwareAcceleration` — `auto` (VideoToolbox on a native macOS host, AMF on a native Windows + AMD host,
   VAAPI when a Linux render device is present, else software), `vaapi`, `videotoolbox`, `amf`, or `none`
   (default `auto`). A choice the host can't satisfy falls back to software.
-- `crf` — software-encoder quality (0–51); ignored by the hardware encoders.
+- `qualityLevel` — `highest`, `high` (default), `balanced` or `small`. Encoder-independent: the engine maps
+  it onto whichever family the host reaches (a CRF for the software encoders, a constant quantiser for
+  AMF/VAAPI, `-q:v` for VideoToolbox), so the same level means the same picture wherever the job lands.
+- `audioTargets` — re-encodes chosen audio tracks to `eac3`/`ac3` while the rest are copied, per track.
+  Independent of what happens to the picture, so shrinking only the audio is one job.
 
 Each job snapshot (`GET /jobs`, `GET /jobs/{id}`, and the SSE `progress` events) carries `effectiveHardware`
 — the encoder family actually selected after auto-detection/fallback (`vaapi` / `videotoolbox` / `amf` /

@@ -436,7 +436,8 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
     /// the proven software-decode → <c>hwupload</c> → hardware-encode chain (most compatible across arbitrary
     /// inputs); VideoToolbox (native macOS) maps straight to the platform encoder; AMF (native Windows + AMD)
     /// hardware-decodes on the VCN via D3D11VA (the decoder downloads the surfaces to system memory) and
-    /// hardware-encodes with the <c>*_amf</c> encoders; software uses libx264/libx265 with an optional CRF.
+    /// hardware-encodes with the <c>*_amf</c> encoders; software uses libx264/libx265. Every path carries the
+    /// rate control its family expresses the job's quality level in.
     /// An optional downscale is applied with the GPU scaler on VAAPI and the CPU <c>scale</c> filter
     /// elsewhere. Audio and (for Matroska outputs) subtitle/attachment
     /// streams are copied — all of them, or the explicitly selected subset — so nothing is silently dropped.</summary>
@@ -526,8 +527,7 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
             AddVideoEncode(args, request, hardware);
         }
 
-        args.Add("-c:a");
-        args.Add("copy");
+        AddAudioCodecs(args, audio, request.AudioTargets);
         if (keepSubtitles)
         {
             args.Add("-c:s");
@@ -552,6 +552,58 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         args.Add(output);
         return args;
     }
+
+    /// <summary>
+    /// Chooses what happens to each mapped audio track. With no targets this stays the blanket
+    /// <c>-c:a copy</c> it has always been — which is also the only form that works alongside a "copy every
+    /// stream of this type" mapping, since that has no addressable positions. Naming even one target switches
+    /// to per-position arguments, so the untargeted tracks keep being copied explicitly rather than by
+    /// omission.
+    /// <para>
+    /// No channel argument is emitted. The encoders advertise the layouts they accept and ffmpeg negotiates a
+    /// downmix into the filter graph, so a 7.1 source lands as 5.1 on its own; forcing <c>-ac</c> here would
+    /// also upmix a stereo track, which is the opposite of what anyone asked for.
+    /// </para></summary>
+    private static void AddAudioCodecs(
+        List<string> args,
+        IReadOnlyList<MappedStream> mapped,
+        IReadOnlyList<AudioTarget>? targets)
+    {
+        if (targets is null || targets.Count == 0)
+        {
+            args.Add("-c:a");
+            args.Add("copy");
+            return;
+        }
+
+        for (var position = 0; position < mapped.Count; position++)
+        {
+            var stream = mapped[position];
+            var target = stream.Index is { } index
+                ? targets.FirstOrDefault(entry => entry.Input == stream.Input && entry.StreamIndex == index)
+                : null;
+
+            args.Add($"-c:a:{position.ToString(CultureInfo.InvariantCulture)}");
+            if (target is null)
+            {
+                args.Add("copy");
+                continue;
+            }
+
+            args.Add(AudioEncoder(target.Codec));
+            if (target.BitrateKbps is { } kbps)
+            {
+                args.Add($"-b:a:{position.ToString(CultureInfo.InvariantCulture)}");
+                args.Add($"{kbps.ToString(CultureInfo.InvariantCulture)}k");
+            }
+        }
+    }
+
+    private static string AudioEncoder(TranscodeAudioCodec codec) => codec switch
+    {
+        TranscodeAudioCodec.Ac3 => "ac3",
+        _ => "eac3",
+    };
 
     /// <summary>One mapped stream: which input file it comes from and its absolute index inside that file.
     /// A null <see cref="Index"/> is the "copy every stream of this type" selection, which has no single
@@ -598,13 +650,23 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         return mapped.Count > 0;
     }
 
-    /// <summary>Adds the video encoder (and optional downscale) for the resolved hardware. VAAPI scales on the
-    /// GPU (<c>scale_vaapi</c> inside the hwupload chain); the other paths hand the encoder system-memory
-    /// frames, so a plain CPU <c>scale</c> fits. The caller omits <see cref="TranscodeJobRequest.MaxHeight"/>
-    /// when the source is already at or below the target, so this never upscales.</summary>
+    /// <summary>Adds the video encoder, its rate control and an optional downscale for the resolved hardware.
+    /// VAAPI scales on the GPU (<c>scale_vaapi</c> inside the hwupload chain); the other paths hand the
+    /// encoder system-memory frames, so a plain CPU <c>scale</c> fits. The caller omits
+    /// <see cref="TranscodeJobRequest.MaxHeight"/> when the source is already at or below the target, so this
+    /// never upscales.
+    /// <para>
+    /// Every family gets rate control, which is what lets a job actually shrink a file. Each expresses the
+    /// same <see cref="TranscodeQualityLevel"/> in its own dialect — a CRF, a constant quantiser, or
+    /// VideoToolbox's inverted 1–100 quality — and <see cref="QualityLevels"/> owns the translation. Emitting
+    /// nothing (the previous behaviour on every hardware path) left the driver to pick, which meant a
+    /// consumer could not ask for a smaller file at all.
+    /// </para></summary>
     private void AddVideoEncode(List<string> args, TranscodeJobRequest request, TranscodeHardware hardware)
     {
         var height = request.MaxHeight;
+        var level = request.QualityLevel ?? QualityLevels.Default;
+        var codec = request.VideoCodec;
         switch (hardware)
         {
             case TranscodeHardware.Vaapi:
@@ -613,33 +675,51 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
                     ? $"format=nv12,hwupload,scale_vaapi=w=-2:h={h.ToString(CultureInfo.InvariantCulture)}"
                     : "format=nv12,hwupload");
                 args.Add("-c:v");
-                args.Add(VaapiEncoder(request.VideoCodec));
+                args.Add(VaapiEncoder(codec));
+                args.Add("-rc_mode");
+                args.Add("CQP");
+                args.Add("-qp");
+                args.Add(Number(QualityLevels.HardwareQp(level, codec)));
                 break;
             case TranscodeHardware.VideoToolbox:
                 AddCpuScale(args, height);
                 args.Add("-c:v");
-                args.Add(VideoToolboxEncoder(request.VideoCodec));
+                args.Add(VideoToolboxEncoder(codec));
+                // -q:v is VideoToolbox's constant-quality mode and is not available on every host (notably
+                // Intel Macs). Where it is missing ffmpeg fails to open the encoder and the job fails with
+                // that message, which is the intended outcome: silently encoding at the driver default would
+                // hand back a file the requested level says nothing about.
+                args.Add("-q:v");
+                args.Add(Number(QualityLevels.VideoToolboxQuality(level, codec)));
                 break;
             case TranscodeHardware.Amf:
                 // The decoder already hands back system-memory frames (see the -hwaccel setup), so no
                 // hwdownload filter — just the optional CPU downscale.
                 AddCpuScale(args, height);
                 args.Add("-c:v");
-                args.Add(AmfEncoder(request.VideoCodec));
+                args.Add(AmfEncoder(codec));
+                // CQP is the only quality-style mode AMF offers here: qvbr, hqvbr, vbr_peak+VBAQ and CQP
+                // with pre-analysis all fail encoder init with AMF_NOT_SUPPORTED. I and P frames carry the
+                // same quantiser; -qp_b is deliberately absent, since hevc_amf does not expose it.
+                var qp = Number(QualityLevels.HardwareQp(level, codec));
+                args.Add("-rc");
+                args.Add("cqp");
+                args.Add("-qp_i");
+                args.Add(qp);
+                args.Add("-qp_p");
+                args.Add(qp);
                 break;
             default:
                 AddCpuScale(args, height);
                 args.Add("-c:v");
-                args.Add(SoftwareEncoder(request.VideoCodec));
-                if (request.Crf is { } crf)
-                {
-                    args.Add("-crf");
-                    args.Add(crf.ToString(CultureInfo.InvariantCulture));
-                }
-
+                args.Add(SoftwareEncoder(codec));
+                args.Add("-crf");
+                args.Add(Number(QualityLevels.SoftwareCrf(level, codec)));
                 break;
         }
     }
+
+    private static string Number(int value) => value.ToString(CultureInfo.InvariantCulture);
 
     /// <summary>Adds a CPU <c>scale=-2:H</c> downscale (aspect kept, width snapped to an even number) when a
     /// target height is set.</summary>

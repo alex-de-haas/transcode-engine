@@ -53,7 +53,7 @@ else falls back to an engine default:
 | `outputMountLabel` | string? | Media mount for the output. Defaults to `inputMountLabel` when omitted. |
 | `videoCodec` | string? | `h264`, `hevc` (default), or `copy` (remux the video untouched). Aliases: `h265`/`x265` → hevc, `avc`/`x264` → h264. **Defaults to `copy` on a merge** — see `additionalInputs`. |
 | `hardwareAcceleration` | string? | `auto` (default), `vaapi`, `videotoolbox`, `amf`, or `none`. A choice the host can't satisfy falls back to software. See [Hardware acceleration](hardware-acceleration.md). |
-| `crf` | int? | Software-encoder quality, `0`–`51`. Ignored by the hardware encoders. |
+| `qualityLevel` | string? | `highest`, `high` (default), `balanced`, or `small`. Encoder-independent: the engine maps it onto whichever family the host reaches, so the same level means the same picture everywhere. See [Compression controls](compression-controls/feature.md). |
 | `maxHeight` | int? | Downscale to this height (aspect kept, never upscales), `16`–`4320`. Omit to keep the source resolution. |
 | `audioStreamIndexes` | int[]? | Absolute input stream indices to keep, in output order. Omit to copy **all** audio. |
 | `subtitleStreamIndexes` | int[]? | Absolute input subtitle indices to keep. Omit to copy all. **Matroska (`.mkv`) output only.** |
@@ -61,10 +61,11 @@ else falls back to an engine default:
 | `defaultSubtitleStreamIndex` | int? | Same, for subtitles. Requires `subtitleStreamIndexes`; `.mkv` output only. |
 | `additionalInputs` | object[]? | Further files whose streams join the output — a merge. Says nothing about the picture: the video follows `videoCodec`, so a merge may re-encode. Naming any only changes that field's **default** to `copy`. See [Merge Jobs](merge-jobs/feature.md). |
 | `metadataOverrides` | object[]? | Rewrites an output stream's `language`/`title`. Applies to a merge and to a plain transcode alike. |
+| `audioTargets` | object[]? | Re-encodes chosen audio tracks (`{ input, streamIndex, codec, bitrate? }`, codec `eac3`/`ac3`) while the rest are copied. Requires `audioStreamIndexes`. Independent of what happens to the picture. See [Compression controls](compression-controls/feature.md). |
 
-The handler validates before it mutates: it parses the codec/hardware, range-checks
-`crf` / `maxHeight`, rejects negative stream indices, rejects encode-only knobs
-(`maxHeight` / `crf`) whenever the video is copied — asked for with
+The handler validates before it mutates: it parses the codec/hardware/quality level,
+range-checks `maxHeight`, rejects negative stream indices, rejects encode-only knobs
+(`maxHeight` / `qualityLevel`) whenever the video is copied — asked for with
 `videoCodec: copy` or defaulted to by a merge that named none — requires a
 chosen default track to be in its explicit index list, and rejects a subtitle
 selection for a non-`.mkv` output (subtitles ride only in Matroska — see

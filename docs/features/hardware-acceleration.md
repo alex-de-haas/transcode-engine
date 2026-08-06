@@ -88,14 +88,32 @@ encoder and wires the right scaler for an optional `maxHeight` downscale:
 | VAAPI | `h264_vaapi` | `hevc_vaapi` | Software-decode → `format=nv12,hwupload` → `scale_vaapi` on the GPU. The proven chain, most compatible across arbitrary inputs. |
 | VideoToolbox | `h264_videotoolbox` | `hevc_videotoolbox` | System-memory frames; CPU `scale=-2:H`. |
 | AMF | `h264_amf` | `hevc_amf` | D3D11VA hardware-decode with `-hwaccel_output_format` unset, so the decoder downloads each surface into its own software format (`nv12` / `p010`) → CPU `scale=-2:H`. |
-| Software | `libx264` | `libx265` | CPU decode + `scale=-2:H`; honours `crf`. |
+| Software | `libx264` | `libx265` | CPU decode + `scale=-2:H`. |
 
 The VAAPI path keeps scaling on the GPU (`scale_vaapi=w=-2:h=H` inside the hwupload
 chain); every other path hands the encoder system-memory frames, so a plain CPU
 `scale=-2:H` (aspect kept, width snapped to an even number) fits. The caller is
 expected to omit `maxHeight` when the source is already at or below the target, so the
-downscale never upscales. `crf` applies only to the software encoders; the hardware
-encoders ignore it.
+downscale never upscales.
+
+## Rate control
+
+Every family carries rate control, expressed as the job's `qualityLevel` in that
+family's own dialect. This is what makes the opportunistic fallback below honest: a
+job that lands on another encoder than it expected keeps asking for the same picture.
+
+| Family | Arguments |
+| --- | --- |
+| Software | `-crf N` |
+| AMF | `-rc cqp -qp_i N -qp_p N` — CQP is the only quality-style mode it offers; `qvbr`, `hqvbr`, `vbr_peak` with VBAQ and CQP with pre-analysis all fail encoder init with `AMF_NOT_SUPPORTED`. |
+| VAAPI | `-rc_mode CQP -qp N` |
+| VideoToolbox | `-q:v N`, on an inverted scale where higher is better. Not available on every host; where it is missing the job fails rather than encoding at the driver default. |
+
+The level → value tables and the measurements behind them are in
+[Compression controls](compression-controls/feature.md). The short version:
+software and AMF came out equivalent in quality per byte at a 30–70× speed
+difference, so hardware is a legitimate choice for shrinking a file, not only for
+finishing sooner.
 
 ## Why hardware is opportunistic but honest
 
