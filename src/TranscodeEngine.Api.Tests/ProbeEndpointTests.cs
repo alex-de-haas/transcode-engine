@@ -22,7 +22,7 @@ namespace TranscodeEngine.Api.Tests;
 public sealed class ProbeEndpointTests
 {
     private static readonly ProbeResponse Probe = new("mkv", 120.5, 8_000_000, 1_024,
-        [new ProbedStreamInfo(0, ProbedStreamKind.Video, "hevc", "Main 10", "eng", null, true, false, 1920, 1080, 24, 10, HdrFormat.Hdr10, null, null)]);
+        [new ProbedStreamInfo(0, ProbedStreamKind.Video, "hevc", "Main 10", "eng", null, true, false, 7_500_000, 1920, 1080, 24, 10, HdrFormat.Hdr10, null, null)]);
 
     private static TranscodeEngineSettings Settings(string raw) =>
         new() { AppDataDir = "/tmp/te", MediaRoots = TranscodeEngineSettings.ParseMediaRoots(raw, "/tmp/te") };

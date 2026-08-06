@@ -6,9 +6,12 @@ namespace TranscodeEngine.Api.Api;
 /// media mount, optional when it has exactly one. <see cref="OutputMountLabel"/> defaults to
 /// <see cref="InputMountLabel"/> when omitted. <see cref="VideoCodec"/> (<c>h264</c>/<c>hevc</c>),
 /// <see cref="HardwareAcceleration"/> (<c>auto</c>/<c>vaapi</c>/<c>videotoolbox</c>/<c>amf</c>/<c>none</c>)
-/// and <see cref="Crf"/> fall back to engine defaults when omitted. <see cref="VideoCodec"/> also accepts
-/// <c>copy</c> to remux the video untouched — <see cref="MaxHeight"/> and <see cref="Crf"/> are then rejected
-/// as contradictory. <see cref="MaxHeight"/> downscales to that height (omit to keep the source resolution).
+/// and <see cref="QualityLevel"/> (<c>highest</c>/<c>high</c>/<c>balanced</c>/<c>small</c>) fall back to
+/// engine defaults when omitted. A level is deliberately not a CRF: the engine maps it onto whichever encoder
+/// the host can reach, so the same level means the same picture on all of them.
+/// <see cref="VideoCodec"/> also accepts <c>copy</c> to remux the video untouched — <see cref="MaxHeight"/>
+/// and <see cref="QualityLevel"/> are then rejected as contradictory. <see cref="MaxHeight"/> downscales to
+/// that height (omit to keep the source resolution).
 /// <see cref="AudioStreamIndexes"/>/<see cref="SubtitleStreamIndexes"/> are absolute input stream indices to
 /// copy (omit to copy all of that type). <see cref="DefaultAudioStreamIndex"/>/
 /// <see cref="DefaultSubtitleStreamIndex"/> mark one mapped track as the default; each requires its matching
@@ -22,22 +25,40 @@ public sealed record CreateJobRequest(
     string OutputPath,
     string? VideoCodec,
     string? HardwareAcceleration,
-    int? Crf,
+    string? QualityLevel,
     int? MaxHeight = null,
     IReadOnlyList<int>? AudioStreamIndexes = null,
     IReadOnlyList<int>? SubtitleStreamIndexes = null,
     int? DefaultAudioStreamIndex = null,
     int? DefaultSubtitleStreamIndex = null,
     IReadOnlyList<AdditionalInputRequest>? AdditionalInputs = null,
-    IReadOnlyList<StreamMetadataOverrideRequest>? MetadataOverrides = null);
+    IReadOnlyList<StreamMetadataOverrideRequest>? MetadataOverrides = null,
+    IReadOnlyList<AudioTargetRequest>? AudioTargets = null);
+
+/// <summary>
+/// Re-encodes one mapped audio track instead of copying it — the lever that shrinks a file without touching
+/// a frame of video. <c>input</c> is the ordinal of the file the stream comes from (0 is the primary input),
+/// <c>streamIndex</c> its absolute index there, and <c>codec</c> is <c>eac3</c> or <c>ac3</c>.
+/// <para>
+/// The stream must be one the job maps explicitly, for the same reason a chosen default track must be: the
+/// argument needs an output position, and a "copy every stream of this type" mapping has none. <c>bitrate</c>
+/// is in kbps and optional — omitted, ffmpeg scales a default to the channel count. Multichannel sources are
+/// downmixed to whatever the codec accepts (7.1 becomes 5.1) without being asked.
+/// </para>
+/// </summary>
+public sealed record AudioTargetRequest(
+    int Input,
+    int StreamIndex,
+    string Codec,
+    int? Bitrate = null);
 
 /// <summary>
 /// A further file whose streams join the output — a sidecar dub or subtitle being merged into the video.
 /// Naming any turns the job into a merge, which says nothing about the picture: the video follows
 /// <c>videoCodec</c> exactly as it does for any other job, so a merge may re-encode. What a merge changes is
 /// the <b>default</b> — omitting <c>videoCodec</c> copies the video, where an ordinary job would encode to
-/// HEVC — and the encode-only knobs (<c>maxHeight</c>, <c>crf</c>) are rejected whenever the video ends up
-/// copied, whether that was asked for or defaulted to.
+/// HEVC — and the encode-only knobs (<c>maxHeight</c>, <c>qualityLevel</c>) are rejected whenever the video
+/// ends up copied, whether that was asked for or defaulted to.
 /// <para>
 /// The path resolves against the media mount its label selects, defaulting to the primary input's mount, and
 /// must exist. At least one stream has to be selected, and selections are explicit absolute indexes within

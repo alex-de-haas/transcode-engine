@@ -135,6 +135,25 @@ public sealed class FfprobeMediaInspectorTests
         Assert.True(probe.Streams[2].IsForced);
     }
 
+    [Theory]
+    // The direct field, as MP4 and TS carry it.
+    [InlineData("""{"index":0,"codec_type":"audio","bit_rate":"640000"}""", 640_000)]
+    // Matroska states no per-track rate, so ffprobe omits bit_rate and mkvmerge's statistics tag is what
+    // the file has — under its plain name, or with the tag language ffmpeg appends to it.
+    [InlineData("""{"index":0,"codec_type":"audio","tags":{"BPS":"4106448"}}""", 4_106_448)]
+    [InlineData("""{"index":0,"codec_type":"audio","tags":{"BPS-eng":"4106448"}}""", 4_106_448)]
+    [InlineData("""{"index":0,"codec_type":"audio","tags":{"language":"rus","BPS-rus":"4106448"}}""", 4_106_448)]
+    // bit_rate wins when a file states both.
+    [InlineData("""{"index":0,"codec_type":"audio","bit_rate":"640000","tags":{"BPS":"4106448"}}""", 640_000)]
+    // Neither one is absent rather than guessed at from the file's overall rate.
+    [InlineData("""{"index":0,"codec_type":"audio","tags":{"language":"eng"}}""", null)]
+    [InlineData("""{"index":0,"codec_type":"audio"}""", null)]
+    // ffprobe declining to answer, which must not read as a measured zero.
+    [InlineData("""{"index":0,"codec_type":"audio","bit_rate":"0"}""", null)]
+    [InlineData("""{"index":0,"codec_type":"audio","bit_rate":"0","tags":{"BPS":"4106448"}}""", 4_106_448)]
+    public void Reads_a_stream_bitrate_from_the_field_or_the_mkvmerge_tag(string stream, int? expected) =>
+        Assert.Equal(expected, Assert.Single(FfprobeMediaInspector.Map(Json(stream), "/media/x.mkv")!.Streams).Bitrate);
+
     [Fact]
     public void Output_without_streams_is_not_a_probe_result() =>
         Assert.Null(FfprobeMediaInspector.Map("""{"format":{}}""", "/media/x.mkv"));

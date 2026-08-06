@@ -87,16 +87,34 @@ encoder and wires the right scaler for an optional `maxHeight` downscale:
 | VAAPI | `h264_vaapi` | `hevc_vaapi` | Software-decode → `format=<nv12\|p010>,hwupload` → `scale_vaapi` on the GPU. The proven chain, most compatible across arbitrary inputs; the upload format tracks the source depth (below). |
 | VideoToolbox | `h264_videotoolbox` | `hevc_videotoolbox` | System-memory frames; CPU `scale=-2:H`. |
 | AMF | `h264_amf` | `hevc_amf` | D3D11VA hardware-decode with `-hwaccel_output_format` unset, so the decoder downloads each surface into its own software format (`nv12` / `p010`) → CPU `scale=-2:H`. |
-| Software | `libx264` | `libx265` | CPU decode + `scale=-2:H`; honours `crf`. |
+| Software | `libx264` | `libx265` | CPU decode + `scale=-2:H`. |
 
 The VAAPI path keeps scaling on the GPU (`scale_vaapi=w=-2:h=H` inside the hwupload
 chain); every other path hands the encoder system-memory frames, so a plain CPU
 `scale=-2:H` (aspect kept, width snapped to an even number) fits. The caller is
 expected to omit `maxHeight` when the source is already at or below the target, so the
-downscale never upscales. `crf` applies only to the software encoders; the hardware
-encoders ignore it.
+downscale never upscales.
 
-### Bit depth on the VAAPI upload
+## Rate control
+
+Every family carries rate control, expressed as the job's `qualityLevel` in that
+family's own dialect. This is what makes the opportunistic fallback below honest: a
+job that lands on another encoder than it expected keeps asking for the same picture.
+
+| Family | Arguments |
+| --- | --- |
+| Software | `-crf N` |
+| AMF | `-rc cqp -qp_i N -qp_p N` — CQP is the only quality-style mode it offers; `qvbr`, `hqvbr`, `vbr_peak` with VBAQ and CQP with pre-analysis all fail encoder init with `AMF_NOT_SUPPORTED`. |
+| VAAPI | `-rc_mode CQP -qp N` |
+| VideoToolbox | `-q:v N`, on an inverted scale where higher is better. Not available on every host; where it is missing the job fails rather than encoding at the driver default. |
+
+The level → value tables and the measurements behind them are in
+[Compression controls](../compression-controls/feature.md). The short version:
+software and AMF came out equivalent in quality per byte at a 30–70× speed
+difference, so hardware is a legitimate choice for shrinking a file, not only for
+finishing sooner.
+
+## Bit depth on the VAAPI upload
 
 The format named before `hwupload` becomes the VAAPI surface's `sw_format`, and with
 it the depth the encoder is handed — the conversion happens in software, in the filter
@@ -124,7 +142,7 @@ Two deliberate limits:
   parser does not model can only ever keep the pre-existing `nv12` path, never
   mis-select `p010`.
 
-### The Main 10 capability probe
+## The Main 10 capability probe
 
 A render node is not a promise of Main 10: an Intel GPU before Kaby Lake exposes a
 perfectly good VAAPI device whose HEVC encoder is Main-only. That is the one hardware
@@ -161,9 +179,11 @@ while the job's `effectiveHardware` reports `software` whenever this fallback fi
 ffmpeg errors out if it cannot initialise a `*_vaapi` / `*_videotoolbox` / `*_amf`
 device — it never silently falls back to software mid-run. So a job whose
 `effectiveHardware` is a hardware family **and** reaches `Completed` definitely used
-hardware. The engine's own fallback happens *before* the run (in `ResolveHardware`),
-which is why the per-job log line and `effectiveHardware` snapshot field report the
-resolved encoder rather than the requested one.
+hardware. Every fallback the engine performs happens *before* the run — in
+`ResolveHardware` for a family the host cannot reach, and in the Main 10 check above
+for a capability the render node does not imply — and both land before `job.Start`,
+which is why the per-job log line and the `effectiveHardware` snapshot field report
+the encoder actually used rather than the one requested.
 
 ## Testing Expectations
 

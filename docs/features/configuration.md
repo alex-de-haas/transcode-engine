@@ -54,8 +54,9 @@ directly (e.g. for a local run) when needed:
 - The control port under `local` is `HOSTY_PORT_CONTROL`; in the container it is
   `ASPNETCORE_URLS` (the container flag `DOTNET_RUNNING_IN_CONTAINER` is what selects
   between them).
-- Per-job `hardwareAcceleration` overrides the `HWACCEL` engine default; `crf` /
-  `maxHeight` / stream selections are per-job only (no engine-wide default).
+- Per-job `hardwareAcceleration` overrides the `HWACCEL` engine default;
+  `qualityLevel` / `maxHeight` / stream selections and audio targets are per-job only
+  (no engine-wide default).
 - `MAX_CONCURRENT_JOBS` is floored at 1 (`max(1, value)`), so a `0` or negative value
   still yields one worker.
 - Numeric/enum settings that fail to parse fall back to their defaults rather than

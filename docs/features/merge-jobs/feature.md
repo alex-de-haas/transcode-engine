@@ -41,7 +41,7 @@ what a caller gets by omission — least of all one written when a merge was a c
 by definition. So the rule reads: say nothing and the video is untouched; say
 `copy` and it is untouched; name a codec and it is encoded.
 
-The encode-only knobs (`maxHeight`, `crf`) follow the video, not the merge: they
+The encode-only knobs (`maxHeight`, `qualityLevel`) follow the video, not the merge: they
 are rejected whenever the video is copied — explicitly or by a merge's default —
 and accepted whenever it is encoded.
 

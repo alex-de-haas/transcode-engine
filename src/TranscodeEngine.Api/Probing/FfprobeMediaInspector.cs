@@ -163,6 +163,7 @@ public sealed class FfprobeMediaInspector(
             String(tags, "title") ?? String(tags, "name"),
             Flag(disposition, "default"),
             Flag(disposition, "forced"),
+            Bitrate(stream, tags),
             Int(stream, "width"),
             Int(stream, "height"),
             FrameRate(stream),
@@ -171,6 +172,43 @@ public sealed class FfprobeMediaInspector(
             Int(stream, "channels"),
             Int(stream, "sample_rate"));
     }
+
+    /// <summary>
+    /// A stream's own bitrate. <c>bit_rate</c> is the direct answer, but Matroska stores no per-track rate
+    /// and ffprobe leaves the field out — so on exactly the remuxes worth measuring it is absent, and
+    /// mkvmerge's <c>BPS</c> statistics tag is what the file actually carries. A stream with neither answers
+    /// null: the alternative is a share of the file's overall rate, which is a guess.
+    /// </summary>
+    private static int? Bitrate(JsonElement stream, JsonElement tags) =>
+        Positive(Int(stream, "bit_rate")) ?? Positive(BitsPerSecondTag(tags));
+
+    /// <summary>
+    /// mkvmerge's per-track <c>BPS</c> tag. ffmpeg appends the tag's language when the file sets one, so a
+    /// remux commonly spells it <c>BPS-eng</c> and the plain name is missing; both are read, and a track
+    /// carrying both states the same figure twice.
+    /// </summary>
+    private static int? BitsPerSecondTag(JsonElement tags)
+    {
+        if (tags.ValueKind != JsonValueKind.Object)
+        {
+            return null;
+        }
+
+        foreach (var tag in tags.EnumerateObject())
+        {
+            if ((tag.Name.Equals("BPS", StringComparison.OrdinalIgnoreCase) ||
+                 tag.Name.StartsWith("BPS-", StringComparison.OrdinalIgnoreCase)) &&
+                Int(tags, tag.Name) is { } bitrate)
+            {
+                return bitrate;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>A zero or negative rate is ffprobe declining to answer, not a measurement.</summary>
+    private static int? Positive(int? value) => value > 0 ? value : null;
 
     /// <summary>"und" is ffprobe saying it has no language, not a language.</summary>
     private static string? Language(JsonElement tags) =>

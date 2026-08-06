@@ -1,7 +1,7 @@
 # Probe API
 
 Created: 2026-07-27
-Updated: 2026-07-27
+Updated: 2026-08-06
 
 `POST /probe` inspects one media file on a media mount and returns a normalized
 description of its container and streams. It exists so a consumer does not have to
@@ -41,8 +41,8 @@ per file.
   "streams": [
     { "index": 0, "kind": "Video", "codec": "hevc", "profile": "Main 10",
       "language": "eng", "title": null, "isDefault": true, "isForced": false,
-      "width": 1920, "height": 1080, "frameRate": 23.976, "bitDepth": 10,
-      "hdr": "Hdr10", "channels": null, "sampleRate": null }
+      "bitrate": 7500000, "width": 1920, "height": 1080, "frameRate": 23.976,
+      "bitDepth": 10, "hdr": "Hdr10", "channels": null, "sampleRate": null }
   ]
 }
 ```
@@ -77,6 +77,23 @@ Matroska keeps a track's name in `title`; MP4 keeps it in `udta/name`, which
 `ffprobe` surfaces as the `name` tag. Whichever the file carries becomes `title`.
 A language of `und` is `ffprobe` saying it has none, and becomes `null`.
 
+### Stream bitrate
+
+`bitrate` is one stream's own rate in bits per second, and it is what lets a consumer
+say what a single track costs — the number a UI needs to show that nineteen lossless
+dubs, not the picture, are the larger half of a file.
+
+`ffprobe`'s `bit_rate` is the direct answer, and MP4 and TS carry it. **Matroska does
+not**, so the field is absent on exactly the remuxes worth measuring; `mkvmerge`
+instead writes a per-track `BPS` statistics tag, which is read as the fallback.
+`ffmpeg` appends the tag's language when the file sets one, so a remux commonly
+spells it `BPS-eng` and the plain name is missing — both are read.
+
+A stream stating neither reports `null`. The overall `bitrate` is known and the
+stream count is known, but a share of the whole is a guess, and a consumer cannot
+tell a guess from a measurement once it is in the field. A zero from `ffprobe` is
+`ffprobe` declining to answer and is reported as `null` too, not as a measured zero.
+
 ### HDR
 
 `hdr` carries everything this app can determine — `DolbyVision`, `Hdr10Plus`,
@@ -107,7 +124,10 @@ result.
   2094-40, an absent transfer function, and a PQ file carrying only static
   mastering metadata; HDR answered only for video; embedded cover art keeping its
   index so the numbering matches `ffprobe`; the track name read from either
-  container's tag; `und` becoming no language; unreadable rational frame rates;
+  container's tag; `und` becoming no language; a stream bitrate read from
+  `bit_rate`, from a `BPS` tag and from a language-suffixed one, with `bit_rate`
+  winning over the tag, a zero treated as no answer, and neither present staying
+  null; unreadable rational frame rates;
   an unmodelled stream kind still occupying its index; and output without streams
   yielding no result.
 - `ProbeEndpointTests` — mount selection and the failure responses against the

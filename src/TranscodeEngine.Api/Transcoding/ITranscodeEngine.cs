@@ -7,6 +7,40 @@ public enum TranscodeVideoCodec
     Hevc,
 }
 
+/// <summary>
+/// How much picture a re-encode is allowed to spend bits on. Encoder-independent by design: the engine owns
+/// the mapping onto each family's own rate control (<c>QualityLevels</c>), so the same level means the same
+/// picture whether the job lands on libx265 or on a hardware encoder. That is what makes the opportunistic
+/// hardware fallback honest — a job that silently moves to another encoder must not silently change quality
+/// with it.
+/// </summary>
+public enum TranscodeQualityLevel
+{
+    /// <summary>Visually near-transparent; roughly halves a UHD remux.</summary>
+    Highest,
+
+    /// <summary>The default. Around a 3.5× reduction on a UHD remux.</summary>
+    High,
+
+    /// <summary>Noticeably smaller, still comfortable on a large screen.</summary>
+    Balanced,
+
+    /// <summary>Size first; compression artefacts become findable.</summary>
+    Small,
+}
+
+/// <summary>What a kept audio track is re-encoded to. Lossy only, by design: the point of re-encoding audio
+/// at all is size, and a lossless target would spend the job's time to save nothing.</summary>
+public enum TranscodeAudioCodec
+{
+    /// <summary>Dolby Digital Plus. The default choice — it carries 5.1 at a fraction of a lossless
+    /// track's bitrate and every player this app's outputs reach can decode it.</summary>
+    Eac3,
+
+    /// <summary>Dolby Digital. Lower ceiling than E-AC-3, for the rare device that stops at AC-3.</summary>
+    Ac3,
+}
+
 /// <summary>Which encoder family a job runs on. <see cref="Auto"/> picks VideoToolbox on a native macOS
 /// host, AMF on a native Windows host with an AMD driver, VAAPI when a Linux render device is present, and
 /// falls back to software otherwise.</summary>
@@ -23,7 +57,7 @@ public enum TranscodeHardware
 /// media mounts by the endpoint) plus the encode parameters. The engine owns no path resolution.
 /// <para>
 /// <see cref="CopyVideo"/> remuxes the video stream untouched (no re-encode, lossless, HDR/Dolby Vision
-/// preserved) — <see cref="VideoCodec"/>, <see cref="HardwareAcceleration"/>, <see cref="Crf"/> and
+/// preserved) — <see cref="VideoCodec"/>, <see cref="HardwareAcceleration"/>, <see cref="QualityLevel"/> and
 /// <see cref="MaxHeight"/> are then irrelevant. <see cref="MaxHeight"/> downscales to that height
 /// (aspect kept, never upscales — the caller is expected to omit it when the source is already smaller).
 /// <see cref="AudioStreamIndexes"/>/<see cref="SubtitleStreamIndexes"/> are absolute input stream indices
@@ -36,7 +70,7 @@ public sealed record TranscodeJobRequest(
     string OutputPath,
     TranscodeVideoCodec VideoCodec,
     TranscodeHardware HardwareAcceleration,
-    int? Crf,
+    TranscodeQualityLevel? QualityLevel,
     bool CopyVideo = false,
     int? MaxHeight = null,
     IReadOnlyList<int>? AudioStreamIndexes = null,
@@ -44,7 +78,29 @@ public sealed record TranscodeJobRequest(
     int? DefaultAudioStreamIndex = null,
     int? DefaultSubtitleStreamIndex = null,
     IReadOnlyList<AdditionalInput>? AdditionalInputs = null,
-    IReadOnlyList<StreamMetadataOverride>? MetadataOverrides = null);
+    IReadOnlyList<StreamMetadataOverride>? MetadataOverrides = null,
+    IReadOnlyList<AudioTarget>? AudioTargets = null);
+
+/// <summary>
+/// Re-encodes one mapped audio track instead of copying it. Addressed the same way a metadata override is —
+/// by (<see cref="Input"/>, <see cref="StreamIndex"/>) — because it answers the same question: which output
+/// position does this argument belong to.
+/// <para>
+/// Per track rather than per job, because one file's tracks want opposite answers: a lossless 7.1 voice-over
+/// dub is pure waste at 5 Mbps, while the original Atmos track beside it must not be touched.
+/// </para>
+/// <para>
+/// <see cref="BitrateKbps"/> is optional. Omitted, ffmpeg picks a default that scales with the channel count
+/// (448k for 5.1, 192k for stereo, 96k for mono) — sane, if conservative for a library. Channel count needs
+/// no handling here at all: the encoders advertise what they accept and ffmpeg downmixes to fit, so a 7.1
+/// source becomes 5.1 without being asked.
+/// </para>
+/// </summary>
+public sealed record AudioTarget(
+    int Input,
+    int StreamIndex,
+    TranscodeAudioCodec Codec,
+    int? BitrateKbps = null);
 
 /// <summary>
 /// A file whose streams join the output alongside the primary input's — a sidecar dub or subtitle being
