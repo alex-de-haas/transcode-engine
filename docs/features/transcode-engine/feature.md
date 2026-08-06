@@ -1,8 +1,7 @@
 # Transcode Engine
 
-Status: Implemented
 Created: 2026-07-03
-Updated: 2026-07-22
+Updated: 2026-08-06
 
 ## Description
 
@@ -15,7 +14,7 @@ dictionary and are never resumed across a restart — and surfaces only live sna
 plus start/complete/fail transition events.
 
 The engine is configured entirely from `TranscodeEngineSettings` (see
-[Configuration](configuration.md)); it never hard-codes ffmpeg paths, the render
+[Configuration](../configuration.md)); it never hard-codes ffmpeg paths, the render
 device, or the worker count.
 
 ## Job queue and worker loops
@@ -27,10 +26,16 @@ grow the queue and the job dictionary without limit). `MAX_CONCURRENT_JOBS` defa
 **1** because hardware encoders have a limited number of concurrent sessions; raise it
 only when the host (and encoder) can take the parallelism.
 
-- **`CreateAsync`** probes the input duration with ffprobe (best-effort — a failure or
-  a probe that exceeds the 30s timeout just means byte-only progress), reads the input
-  file size, mints a GUID job id, stores the `TranscodeJob`, and writes the id to the
-  queue. The job runs as soon as a worker is free. If the queue is full or the engine
+- **`CreateAsync`** probes the input with ffprobe (best-effort — a failure or a probe
+  that exceeds the 30s timeout just means byte-only progress), reads the input file
+  size, mints a GUID job id, stores the `TranscodeJob`, and writes the id to the
+  queue. One `ffprobe` reads two things: the **duration** progress percentages are
+  computed from, and the primary video stream's **`pix_fmt`**, which the job carries
+  so the encode chain can size the hardware upload format to the source's bit depth
+  (see [Hardware acceleration](../hardware-acceleration/feature.md#bit-depth-on-the-vaapi-upload)).
+  The two entries come from different ffprobe sections, so the output is parsed by
+  key rather than by line order, and either may be absent — an audio-only merge
+  source reports no `pix_fmt`. The job runs as soon as a worker is free. If the queue is full or the engine
   is shutting down the write fails and the job is removed with an error.
 - **Worker loop** dequeues an id, skips it if the job is gone or already cancelled,
   and otherwise runs it to completion before taking the next — so each worker
@@ -65,7 +70,7 @@ list, stay bounded no matter how many jobs have run. Eviction runs both after ea
 finishes and on a ~60s background sweep, so even a job cancelled while still queued
 (which never runs through the worker) ages out when the engine is otherwise idle. A
 consumer that needs a permanent record persists the transition events itself (see
-[Consumer integration](consumer-integration.md#driving-off-remote-events)).
+[Consumer integration](../consumer-integration.md#driving-off-remote-events)).
 
 ## Running a job
 
@@ -74,7 +79,7 @@ consumer that needs a permanent record persists the transition events itself (se
 1. **Re-check cancel.** A job cancelled between dequeue and here is marked `Cancelled`
    without spawning ffmpeg.
 2. **Resolve hardware** (`ResolveHardware`, see
-   [Hardware acceleration](hardware-acceleration.md)), mark the job `Running`, raise
+   [Hardware acceleration](../hardware-acceleration/feature.md)), mark the job `Running`, raise
    `JobStarted`, and log the actually-selected encoder (e.g.
    `Job …: encoding with hevc_vaapi (vaapi)`).
 3. **Spawn ffmpeg** with the built argument list, redirecting stdout (the `-progress`
@@ -130,7 +135,7 @@ argument list as:
   render.
 - **Video encode:** `-c:v copy` for a remux, else the selected encoder plus an
   optional downscale (`AddVideoEncode`). See
-  [Hardware acceleration](hardware-acceleration.md#encoder-families-and-the-encode-chain).
+  [Hardware acceleration](../hardware-acceleration/feature.md#encoder-families-and-the-encode-chain).
 - **Audio/subtitle codecs:** `-c:a copy`; `-c:s copy` for Matroska. Audio is always
   copied today, never re-encoded.
 - **Default-track disposition:** `-disposition:<kind>:<pos>` entries that make exactly
@@ -155,7 +160,7 @@ silently doing nothing.
 
 `TranscodeJob.ApplyProgressLine` folds one `key=value` line of ffmpeg's `-progress`
 output into the live fields, and `ToSnapshot` computes the view (see the
-[Control API snapshot table](control-api.md#the-per-job-snapshot) for field
+[Control API snapshot table](../control-api.md#the-per-job-snapshot) for field
 semantics). The non-obvious parts:
 
 - **`out_time_us` / `out_time_ms`** are both microseconds in ffmpeg (`out_time_ms` is
@@ -186,6 +191,13 @@ exercising the pure `BuildArguments`):
 - `maxHeight` adds a CPU `scale=-2:H` for software and a GPU `scale_vaapi` for VAAPI.
 - A chosen default track sets `-disposition` by output position; a default not in the
   selection leaves dispositions untouched.
+- The VAAPI upload format follows the source depth: a >8-bit source targeting HEVC
+  uploads `p010` and names `-profile:v main10` (with the GPU scale still inside that
+  chain), while an 8-bit source, an unreadable `pix_fmt`, and any H.264 target all
+  stay on `nv12` with no profile argument. `SourceBitDepth` is pinned per pixel-format
+  name, including the packing codes (`nv12`, `rgb24`, `yuyv422`) that must *not* read
+  as a depth, and `ParseSourceProbe` is pinned for the key-ordered, audio-only, and
+  unreadable ffprobe outputs.
 
 Actual encoding (spawning ffmpeg, hardware init) depends on real host tooling and is
 validated at the runtime level, not by unit tests.

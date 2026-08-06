@@ -23,13 +23,16 @@ public sealed class FfmpegTranscodeEngineTests
         IReadOnlyList<int>? audio = null,
         IReadOnlyList<int>? subtitle = null,
         int? defaultAudio = null,
-        int? defaultSubtitle = null) =>
+        int? defaultSubtitle = null,
+        TranscodeVideoCodec codec = TranscodeVideoCodec.Hevc,
+        string? sourcePixelFormat = null) =>
         new(
             "job-1",
             new TranscodeJobRequest(
-                "/in/movie.mkv", outputPath, TranscodeVideoCodec.Hevc, TranscodeHardware.None, null,
+                "/in/movie.mkv", outputPath, codec, TranscodeHardware.None, null,
                 copyVideo, maxHeight, audio, subtitle, defaultAudio, defaultSubtitle),
-            durationSeconds: null);
+            durationSeconds: null,
+            sourcePixelFormat);
 
     private static IEnumerable<string> MapTargets(List<string> args)
     {
@@ -154,6 +157,118 @@ public sealed class FfmpegTranscodeEngineTests
         var args = Engine().BuildArguments(JobWith(maxHeight: 1080), TranscodeHardware.Vaapi);
 
         Assert.Equal("format=nv12,hwupload,scale_vaapi=w=-2:h=1080", ValueAfter(args, "-vf"));
+    }
+
+    [Fact]
+    public void BuildArguments_Vaapi_TenBitSource_UploadsP010AndNamesMain10()
+    {
+        // Regression: the upload format is the VAAPI surface's sw_format, so a hardcoded nv12 converts the
+        // frames to 8 bit in software before hwupload ever runs. The loss is silent — the job completes, and
+        // only the banding on HDR gradients shows it — so the source depth has to pick the format.
+        var args = Engine().BuildArguments(
+            JobWith(sourcePixelFormat: "yuv420p10le"), TranscodeHardware.Vaapi);
+
+        Assert.Equal("format=p010,hwupload", ValueAfter(args, "-vf"));
+        Assert.Equal("hevc_vaapi", ValueAfter(args, "-c:v"));
+        Assert.Equal("main10", ValueAfter(args, "-profile:v"));
+    }
+
+    [Fact]
+    public void BuildArguments_Vaapi_TenBitSource_KeepsTheGpuScaleInsideTheP010Chain()
+    {
+        var args = Engine().BuildArguments(
+            JobWith(maxHeight: 1080, sourcePixelFormat: "yuv420p10le"), TranscodeHardware.Vaapi);
+
+        Assert.Equal("format=p010,hwupload,scale_vaapi=w=-2:h=1080", ValueAfter(args, "-vf"));
+    }
+
+    [Theory]
+    [InlineData("yuv420p")]   // the ordinary 8-bit source
+    [InlineData(null)]        // ffprobe could not read a pix_fmt
+    [InlineData("nv12")]      // digits that are a packing code, not a depth
+    public void BuildArguments_Vaapi_EightBitOrUnreadableSource_KeepsNv12(string? pixelFormat)
+    {
+        var args = Engine().BuildArguments(
+            JobWith(sourcePixelFormat: pixelFormat), TranscodeHardware.Vaapi);
+
+        Assert.Equal("format=nv12,hwupload", ValueAfter(args, "-vf"));
+        Assert.DoesNotContain("-profile:v", args);
+    }
+
+    [Fact]
+    public void BuildArguments_Vaapi_TenBitSourceToH264_StaysOnNv12()
+    {
+        // No shipping VAAPI driver exposes an H.264 High 10 *encode* entrypoint, so p010 here would turn a
+        // job that works today (at 8 bit) into a hard "no usable encoding profile" failure. H.264 keeps the
+        // depth it always had; a caller who wants the 10 bits asks for HEVC.
+        var args = Engine().BuildArguments(
+            JobWith(codec: TranscodeVideoCodec.H264, sourcePixelFormat: "yuv420p10le"), TranscodeHardware.Vaapi);
+
+        Assert.Equal("format=nv12,hwupload", ValueAfter(args, "-vf"));
+        Assert.Equal("h264_vaapi", ValueAfter(args, "-c:v"));
+        Assert.DoesNotContain("-profile:v", args);
+    }
+
+    [Fact]
+    public void BuildArguments_TenBitSource_LeavesTheNonVaapiPathsAlone()
+    {
+        // AMF already preserves 10 bit through its own (measured) decode path, and the software encoders
+        // follow the decoded format; neither grew a profile argument.
+        foreach (var hardware in new[] { TranscodeHardware.Amf, TranscodeHardware.VideoToolbox, TranscodeHardware.None })
+        {
+            var args = Engine().BuildArguments(JobWith(sourcePixelFormat: "yuv420p10le"), hardware);
+
+            Assert.DoesNotContain("-vf", args);
+            Assert.DoesNotContain("-profile:v", args);
+        }
+    }
+
+    [Theory]
+    [InlineData("yuv420p10le", 10)]
+    [InlineData("yuv420p10be", 10)]
+    [InlineData("yuv422p10le", 10)]
+    [InlineData("yuv420p12le", 12)]
+    [InlineData("p010le", 10)]
+    [InlineData("gbrp10le", 10)]
+    [InlineData("yuv420p", 8)]
+    [InlineData("yuvj420p", 8)]
+    // Formats whose digits encode subsampling or packing rather than a depth must read as 8, so an
+    // unmodelled format can only ever keep the pre-existing nv12 path.
+    [InlineData("nv12", 8)]
+    [InlineData("rgb24", 8)]
+    [InlineData("yuyv422", 8)]
+    [InlineData("pal8", 8)]
+    [InlineData("", 8)]
+    [InlineData(null, 8)]
+    public void SourceBitDepth_ReadsTheDepthOutOfThePixelFormatName(string? pixelFormat, int expected) =>
+        Assert.Equal(expected, FfmpegTranscodeEngine.SourceBitDepth(pixelFormat));
+
+    [Fact]
+    public void ParseSourceProbe_ReadsDurationAndPixelFormatByName()
+    {
+        // The two entries come from different ffprobe sections, so they are matched by key, not line order.
+        var probe = FfmpegTranscodeEngine.ParseSourceProbe("pix_fmt=yuv420p10le\nduration=6423.104000\n");
+
+        Assert.Equal(6423.104, probe.DurationSeconds);
+        Assert.Equal("yuv420p10le", probe.VideoPixelFormat);
+    }
+
+    [Fact]
+    public void ParseSourceProbe_AudioOnlyInput_ReportsNoPixelFormat()
+    {
+        var probe = FfmpegTranscodeEngine.ParseSourceProbe("duration=1.000000\n");
+
+        Assert.Equal(1.0, probe.DurationSeconds);
+        Assert.Null(probe.VideoPixelFormat);
+    }
+
+    [Fact]
+    public void ParseSourceProbe_UnreadableOutput_ReportsNeither()
+    {
+        var probe = FfmpegTranscodeEngine.ParseSourceProbe("pix_fmt=unknown\nduration=N/A\n");
+
+        Assert.Null(probe.DurationSeconds);
+        Assert.Null(probe.VideoPixelFormat);
     }
 
     [Fact]

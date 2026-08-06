@@ -34,7 +34,7 @@ A single `engine` service with **three** runtime profiles (`defaultRuntime: dock
 ## Runtime profiles
 
 The three profiles exist because the reachable encoder depends on where and how the
-engine runs (see [Hardware acceleration](hardware-acceleration.md)):
+engine runs (see [Hardware acceleration](hardware-acceleration/feature.md)):
 
 - **`docker` (default)** — the published image, software encoding, **no** device. It
   starts on any host, including macOS Docker Desktop (which has no `/dev/dri`). This

@@ -60,7 +60,7 @@ assembles the tagged manifest list from those digests. Images land at
 
 Point Hosty Core at the manifest; the `media` mount and settings are configured through
 the Shell. Which runtime you pick determines the available encoder (see
-[Hardware acceleration](hardware-acceleration.md)):
+[Hardware acceleration](hardware-acceleration/feature.md)):
 
 ```bash
 # Default: software encoding, starts everywhere (incl. macOS Docker Desktop, no /dev/dri).
@@ -111,4 +111,4 @@ API, argument construction, and mount-label logic; hardware VAAPI requires the
 CI runs the xUnit suite on every push/PR. The image build is exercised by the `publish`
 workflow. Hardware encoding (VAAPI / VideoToolbox / AMF) depends on real host devices
 and is validated at the runtime level, not in CI — see
-[Hardware acceleration](hardware-acceleration.md).
+[Hardware acceleration](hardware-acceleration/feature.md).
