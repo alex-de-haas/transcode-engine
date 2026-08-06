@@ -21,6 +21,10 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
     // Hard cap on the ffprobe duration probe so the same kind of special/blocked file can't hang CreateAsync.
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(30);
 
+    // Hard cap on the one-shot Main 10 capability encode. Generous, because it pays for the first VAAPI
+    // device init of the process, but bounded so a wedged driver downgrades the job instead of hanging it.
+    private static readonly TimeSpan CapabilityProbeTimeout = TimeSpan.FromSeconds(20);
+
     // Terminal jobs are kept this long (and at most this many) so a late GET /jobs poll still sees them,
     // then evicted — otherwise the in-memory dictionary (and the SSE snapshot list) grows without bound.
     private static readonly TimeSpan TerminalJobRetention = TimeSpan.FromHours(1);
@@ -41,6 +45,11 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
     private readonly Channel<string> _queue = Channel.CreateBounded<string>(
         new BoundedChannelOptions(MaxQueuedJobs) { FullMode = BoundedChannelFullMode.Wait });
 
+    // Whether this host's VAAPI encoder can actually do HEVC Main 10, established once by a throwaway
+    // encode. Lazy so a host that never runs a 10-bit job never spawns it, and cached because the answer is
+    // a property of the driver, not of the job.
+    private readonly Lazy<bool> _vaapiTenBitSupported;
+
     private CancellationTokenSource? _cts;
     private Task[] _workers = [];
 
@@ -48,6 +57,7 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
     {
         _settings = settings;
         _logger = logger;
+        _vaapiTenBitSupported = new Lazy<bool>(ProbeVaapiTenBitSupport, LazyThreadSafetyMode.ExecutionAndPublication);
     }
 
     public event EventHandler<string>? JobStarted;
@@ -202,6 +212,21 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         }
 
         var hardware = ResolveHardware(job.Request.HardwareAcceleration);
+
+        // A 10-bit VAAPI encode is the one hardware choice the render-node check above cannot vouch for:
+        // the node exists, but the driver's HEVC encoder may be Main-only (Intel before Kaby Lake). Rather
+        // than let ffmpeg hard-fail on encoder init — or silently truncate to 8 bit, which was the bug this
+        // path exists to fix — check the capability once and degrade to software, keeping the promise that
+        // hardware the host cannot satisfy falls back with a warning.
+        if (NeedsVaapiTenBit(job.Request, hardware, job.SourcePixelFormat) && !_vaapiTenBitSupported.Value)
+        {
+            _logger.LogWarning(
+                "Job {JobId}: VAAPI is available but its HEVC encoder cannot do Main 10, and the source is " +
+                "{PixelFormat}; falling back to software so the encode keeps its bit depth.",
+                job.JobId, job.SourcePixelFormat);
+            hardware = TranscodeHardware.None;
+        }
+
         job.Start(hardware);
         JobStarted?.Invoke(this, job.JobId);
 
@@ -668,6 +693,95 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
     /// </summary>
     internal static bool UsesTenBitVaapiUpload(TranscodeVideoCodec codec, string? sourcePixelFormat) =>
         codec == TranscodeVideoCodec.Hevc && SourceBitDepth(sourcePixelFormat) > 8;
+
+    /// <summary>Whether this job would ask the VAAPI encoder for Main 10 — the only case whose capability the
+    /// render-node check cannot answer, and so the only one that needs the pre-flight probe. A remux never
+    /// touches the encoder, and every 8-bit or H.264 job stays on the nv12 path every driver supports.</summary>
+    internal static bool NeedsVaapiTenBit(
+        TranscodeJobRequest request,
+        TranscodeHardware hardware,
+        string? sourcePixelFormat) =>
+        hardware == TranscodeHardware.Vaapi &&
+        !request.CopyVideo &&
+        UsesTenBitVaapiUpload(request.VideoCodec, sourcePixelFormat);
+
+    /// <summary>
+    /// Asks the host's own VAAPI encoder whether it can do HEVC Main 10, by encoding a few frames of
+    /// generated video through the exact chain a real job would use and checking that ffmpeg exits cleanly.
+    /// A driver self-report (<c>vainfo</c>) would be cheaper but less conclusive; this fails exactly when the
+    /// job would have failed. Anything other than a clean exit — a Main-only encoder, a wedged device, an
+    /// ffmpeg that will not start, a probe that outruns its timeout — reads as "no Main 10", which costs
+    /// speed (the job runs in software) but never correctness.
+    /// </summary>
+    private bool ProbeVaapiTenBitSupport()
+    {
+        var device = _settings.VaapiDevice;
+        try
+        {
+            var psi = new ProcessStartInfo(_settings.FfmpegPath)
+            {
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            };
+            foreach (var arg in new[]
+            {
+                "-hide_banner", "-nostdin", "-loglevel", "error",
+                "-vaapi_device", device,
+                // 256x256 clears the minimum dimensions VAAPI HEVC encoders impose; three frames is enough
+                // to get past encoder init, which is where a Main-only driver refuses.
+                "-f", "lavfi", "-i", "color=black:s=256x256:r=25:d=0.12",
+                "-vf", "format=p010,hwupload",
+                "-c:v", "hevc_vaapi", "-profile:v", "main10",
+                "-f", "null", "-",
+            })
+            {
+                psi.ArgumentList.Add(arg);
+            }
+
+            using var process = Process.Start(psi);
+            if (process is null)
+            {
+                return false;
+            }
+
+            // Drain both pipes before waiting: a probe that fills one would otherwise block forever.
+            var stderr = process.StandardError.ReadToEndAsync();
+            _ = process.StandardOutput.ReadToEndAsync();
+            if (!process.WaitForExit((int)CapabilityProbeTimeout.TotalMilliseconds))
+            {
+                TryKillProcess(process);
+                _logger.LogWarning(
+                    "The VAAPI Main 10 capability probe on {Device} did not finish within {Timeout}; " +
+                    "treating the encoder as 8-bit only.", device, CapabilityProbeTimeout);
+                return false;
+            }
+
+            var supported = process.ExitCode == 0;
+            if (supported)
+            {
+                _logger.LogInformation("VAAPI on {Device} encodes HEVC Main 10; 10-bit sources keep their depth.", device);
+            }
+            else
+            {
+                var error = string.Join(" | ", stderr.Result
+                    .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .TakeLast(3));
+                _logger.LogInformation(
+                    "VAAPI on {Device} cannot encode HEVC Main 10 (ffmpeg exit {Code}); 10-bit sources will " +
+                    "run in software. {Error}",
+                    device, process.ExitCode, error);
+            }
+
+            return supported;
+        }
+        catch (Exception exception)
+        {
+            // Best-effort, exactly like the other host probes: never let this crash a job.
+            _logger.LogWarning(exception, "The VAAPI Main 10 capability probe on {Device} failed; treating the encoder as 8-bit only.", device);
+            return false;
+        }
+    }
 
     /// <summary>
     /// Bits per component of an ffmpeg pixel format name. The depth is the digit run right after the last

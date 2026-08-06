@@ -198,6 +198,10 @@ exercising the pure `BuildArguments`):
   name, including the packing codes (`nv12`, `rgb24`, `yuyv422`) that must *not* read
   as a depth, and `ParseSourceProbe` is pinned for the key-ordered, audio-only, and
   unreadable ffprobe outputs.
+- `NeedsVaapiTenBit` is true only for a VAAPI re-encode of a >8-bit source to HEVC —
+  not for a remux, an 8-bit source, an H.264 target, or another hardware family — so
+  the [Main 10 capability probe](../hardware-acceleration/feature.md#the-main-10-capability-probe)
+  is spawned for exactly the case a render-node check cannot answer.
 
 Actual encoding (spawning ffmpeg, hardware init) depends on real host tooling and is
 validated at the runtime level, not by unit tests.

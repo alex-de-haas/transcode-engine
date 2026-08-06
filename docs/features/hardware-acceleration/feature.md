@@ -124,12 +124,37 @@ Two deliberate limits:
   parser does not model can only ever keep the pre-existing `nv12` path, never
   mis-select `p010`.
 
-This is the one place where hardware is *not* purely opportunistic: on a VAAPI device
-whose HEVC encoder is Main-only (Intel before Kaby Lake), a 10-bit source now fails
-encoder init instead of silently producing an 8-bit file. That is the intended
-trade — the silent version was the bug — but it is a behaviour change on old
-hardware, and the fallback for such a host is an explicit `hardwareAcceleration` of
-`none`.
+### The Main 10 capability probe
+
+A render node is not a promise of Main 10: an Intel GPU before Kaby Lake exposes a
+perfectly good VAAPI device whose HEVC encoder is Main-only. That is the one hardware
+question `HardwareProbe.Detect` cannot answer from the filesystem, and getting it wrong
+either way is bad — a hard encoder-init failure breaks the "hardware degrades to
+software" guarantee, and silently truncating to 8 bit is the bug this section exists
+to fix.
+
+So a job that would ask for Main 10 (`NeedsVaapiTenBit`: a VAAPI *re-encode* of a
+deeper-than-8-bit source to HEVC — never a remux, an 8-bit source, or H.264) first
+checks the capability, and falls back to software when the answer is no:
+
+```text
+Job …: VAAPI is available but its HEVC encoder cannot do Main 10, and the source is
+yuv420p10le; falling back to software so the encode keeps its bit depth.
+```
+
+The check is a throwaway encode of a few generated frames through the exact chain a
+real job would use — `format=p010,hwupload` → `hevc_vaapi -profile:v main10` — and it
+passes only when ffmpeg exits cleanly. A driver self-report (`vainfo`) would be
+cheaper but less conclusive; this fails exactly when the job would have failed.
+Anything else — a Main-only encoder, a wedged device, an ffmpeg that will not start, a
+probe that outruns its 20s timeout — reads as "no Main 10", which costs speed but never
+correctness.
+
+It runs at most once per process, lazily: a host that never submits a 10-bit HEVC job
+never spawns it, and one that does pays for it on the first such job only. This is the
+only probe that spawns a process, which is why it lives on the engine rather than in
+`HardwareProbe` — `GET /hardware` stays free of it and keeps reporting device presence,
+while the job's `effectiveHardware` reports `software` whenever this fallback fires.
 
 ## Why hardware is opportunistic but honest
 
@@ -147,9 +172,11 @@ through the pure `BuildArguments` (VAAPI GPU scale vs. software CPU scale, copy
 bypassing hwaccel, and the `nv12`/`p010` upload choice with its `main10` profile — see
 [Transcode engine](../transcode-engine/feature.md#testing-expectations)),
 as is the `HWACCEL` value parsing (`TranscodeEngineSettingsTests.ParseHardware`, incl.
-aliases and unknown → null). The actual device init and encode
-(`Detect` against real `/dev/dri`, VideoToolbox/AMF availability) depends on real host
-hardware and is validated at the runtime level, not by unit tests.
+aliases and unknown → null). `NeedsVaapiTenBit` — which decides whether the Main 10
+capability probe is consulted at all — is pure and unit-tested across remux, depth,
+codec and hardware family. The actual device init and encode (`Detect` against real
+`/dev/dri`, the capability probe's verdict, VideoToolbox/AMF availability) depends on
+real host hardware and is validated at the runtime level, not by unit tests.
 
 The upload-format change is verified end-to-end by encoding a 10-bit HDR sample on a
 host with a `/dev/dri` render node and reading the result back:

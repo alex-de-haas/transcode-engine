@@ -223,6 +223,29 @@ public sealed class FfmpegTranscodeEngineTests
         }
     }
 
+    [Fact]
+    public void NeedsVaapiTenBit_OnlyForAVaapiReEncodeOfADeepSourceToHevc()
+    {
+        // The pre-flight capability probe is the expensive half of the fallback, so it must be asked for
+        // exactly the case a render-node check cannot answer — and for nothing else.
+        var deep = JobWith(sourcePixelFormat: "yuv420p10le");
+
+        Assert.True(FfmpegTranscodeEngine.NeedsVaapiTenBit(deep.Request, TranscodeHardware.Vaapi, "yuv420p10le"));
+
+        // A remux never opens the encoder.
+        var copy = JobWith(copyVideo: true, sourcePixelFormat: "yuv420p10le");
+        Assert.False(FfmpegTranscodeEngine.NeedsVaapiTenBit(copy.Request, TranscodeHardware.Vaapi, "yuv420p10le"));
+
+        // 8-bit, H.264, and the non-VAAPI families all stay on paths every driver satisfies.
+        Assert.False(FfmpegTranscodeEngine.NeedsVaapiTenBit(deep.Request, TranscodeHardware.Vaapi, "yuv420p"));
+        var h264 = JobWith(codec: TranscodeVideoCodec.H264, sourcePixelFormat: "yuv420p10le");
+        Assert.False(FfmpegTranscodeEngine.NeedsVaapiTenBit(h264.Request, TranscodeHardware.Vaapi, "yuv420p10le"));
+        foreach (var other in new[] { TranscodeHardware.None, TranscodeHardware.Amf, TranscodeHardware.VideoToolbox })
+        {
+            Assert.False(FfmpegTranscodeEngine.NeedsVaapiTenBit(deep.Request, other, "yuv420p10le"));
+        }
+    }
+
     [Theory]
     [InlineData("yuv420p10le", 10)]
     [InlineData("yuv420p10be", 10)]
