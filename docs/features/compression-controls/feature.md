@@ -1,7 +1,7 @@
 # Compression Controls
 
 Created: 2026-08-06
-Updated: 2026-08-06
+Updated: 2026-08-07
 
 The two knobs that let a job make a file **smaller** rather than merely different: a
 quality level that every encoder family honours, and per-track audio re-encoding.
@@ -102,6 +102,41 @@ Two things the engine deliberately does **not** do:
 
 Audio targets are independent of what happens to the picture, so the cheapest useful
 conversion — shrink the audio, copy every frame of video — is one job.
+
+## Dolby Vision does not survive a re-encode
+
+A re-encoded job writes no Dolby Vision. What survives is the base layer, and on
+profiles 7 and 8 that base layer is ordinary HEVC Main 10 PQ — a valid HDR10 picture,
+not a broken one. HDR10's static metadata rides through: an AMF re-encode of a Dolby
+Vision source was checked and carries its mastering-display primaries and
+`MaxCLL 468 / MaxFALL 201` on the output.
+
+**Profile 5 is the exception.** Its base layer is IPT-PQ-c2 and is not viewable
+without the RPU — dropping the layer there does not degrade the picture, it wrecks the
+colours. The engine does not distinguish profiles today; a consumer holding profile 5
+material should copy the video rather than encode it.
+
+This is a settled boundary rather than pending work, and two measurements settle it.
+
+**Preserving the layer would cost the pipeline and buy no bytes.** No hardware encoder
+can emit an RPU, so a Dolby Vision job is x265-only — and per the table above x265 and
+AMF are equivalent in quality per byte. The same file size would take 30–70× longer
+(a 107-minute feature: ~28 minutes on AMF against a day or more on x265), and the only
+thing bought is the dynamic metadata. It would also cost the engine's shape: a job is
+one ffmpeg process whose `-progress` stream drives both the snapshot and the
+five-minute no-progress watchdog, while Dolby Vision needs three stages (extract the
+RPU, encode, mux with `mkvmerge` so the container carries the DV signalling), two of
+which emit no progress at all while moving tens of gigabytes.
+
+**Discarding the enhancement layer is not worth a feature either.** A profile 7 source
+carries a second layer that `dovi_tool` can drop losslessly, converting to profile 8.1
+without re-encoding a frame — which sounded like the cheap win. Measured on a 300 s
+sample of the same remux: base layer 1732.1 MB, enhancement layer 75.2 MB. That is
+**4.2% of the video stream and 1.6% of the file** — a minimal enhancement layer, where
+a full one would be 10–25%. Extrapolated over the feature, ~2.3 GB out of 141.7 GB.
+
+What actually shrinks such a file is its audio: in that same 141.7 GB remux, 87.5 GB
+is audio and 54.1 GB is video. See [Per-track audio re-encoding](#per-track-audio-re-encoding).
 
 ## Testing Expectations
 
