@@ -112,8 +112,8 @@ Vision source was checked and carries its mastering-display primaries and
 `MaxCLL 468 / MaxFALL 201` on the output.
 
 **Profile 5 is the exception.** Its base layer is IPT-PQ-c2 and is not viewable
-without the RPU — dropping the layer there does not degrade the picture, it wrecks the
-colours. The engine does not distinguish profiles today; a consumer holding profile 5
+without the RPU — dropping the layer there does not degrade the picture; it wrecks the
+colours. The engine does not distinguish profiles today, so a consumer holding profile 5
 material should copy the video rather than encode it.
 
 This is a settled boundary rather than pending work, and two measurements settle it.
