@@ -105,16 +105,32 @@ conversion — shrink the audio, copy every frame of video — is one job.
 
 ## Dolby Vision does not survive a re-encode
 
-A re-encoded job writes no Dolby Vision. What survives is the base layer, and on
-profiles 7 and 8 that base layer is ordinary HEVC Main 10 PQ — a valid HDR10 picture,
-not a broken one. HDR10's static metadata rides through: an AMF re-encode of a Dolby
-Vision source was checked and carries its mastering-display primaries and
-`MaxCLL 468 / MaxFALL 201` on the output.
+A re-encoded job writes no Dolby Vision. What survives is the base layer — and what
+that base layer *is* depends on the source's profile and, within profile 8, on its
+base-layer compatibility id:
 
-**Profile 5 is the exception.** Its base layer is IPT-PQ-c2 and is not viewable
-without the RPU — dropping the layer there does not degrade the picture; it wrecks the
-colours. The engine does not distinguish profiles today, so a consumer holding profile 5
-material should copy the video rather than encode it.
+| Profile | Base layer | A re-encode yields |
+| --- | --- | --- |
+| 7 (dual layer, from disc) | HEVC Main 10 PQ | HDR10 |
+| 8.1 (`bl_compat=1`) | HEVC Main 10 PQ | HDR10 |
+| 8.4 (`bl_compat=4`) | HLG | HLG |
+| 8.2 (`bl_compat=2`) | SDR, Rec. 709 | SDR |
+| 5 | IPT-PQ-c2 | wrong colours — unusable |
+
+Only the first two keep an HDR10 picture, and there the static metadata rides through:
+an AMF re-encode of a profile 7 source was checked and carries its mastering-display
+primaries and `MaxCLL 468 / MaxFALL 201` on the output. Profile 8.2 and 8.4 sources
+lose the dynamic layer *and* land on a different transfer function than an operator
+reading "Dolby Vision" would expect — not broken, but not HDR10 either.
+
+**Profile 5 is the one that breaks.** Its base layer is not viewable without the RPU:
+dropping the layer there does not degrade the picture; it wrecks the colours.
+
+The engine cannot tell any of these apart today. `ffprobe` reports both `dv_profile`
+and `dv_bl_signal_compatibility_id` in the stream's `DOVI configuration record`, but
+the probe collapses them into a single `DolbyVision` value. Until it carries them, a
+consumer that cannot establish its source's profile by other means should copy the
+video rather than encode it.
 
 This is a settled boundary rather than pending work, and two measurements settle it.
 
