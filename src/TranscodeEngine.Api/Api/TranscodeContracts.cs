@@ -17,12 +17,17 @@ namespace TranscodeEngine.Api.Api;
 /// <see cref="DefaultSubtitleStreamIndex"/> mark one mapped track as the default; each requires its matching
 /// explicit index list (so the absolute index maps to an output position) and must be a member of it.
 /// Subtitle selection/defaults apply only to Matroska (<c>.mkv</c>) outputs.
+/// <para>
+/// <see cref="Outputs"/> is the alternative to <see cref="OutputPath"/>, and the two are mutually exclusive:
+/// naming outputs makes the job an <b>extraction</b>, which writes each named stream to its own file instead
+/// of composing one. Everything above describes a composed output and is rejected alongside it.
+/// </para>
 /// </summary>
 public sealed record CreateJobRequest(
     string? InputMountLabel,
     string InputPath,
     string? OutputMountLabel,
-    string OutputPath,
+    string? OutputPath,
     string? VideoCodec,
     string? HardwareAcceleration,
     string? QualityLevel,
@@ -33,7 +38,35 @@ public sealed record CreateJobRequest(
     int? DefaultSubtitleStreamIndex = null,
     IReadOnlyList<AdditionalInputRequest>? AdditionalInputs = null,
     IReadOnlyList<StreamMetadataOverrideRequest>? MetadataOverrides = null,
-    IReadOnlyList<AudioTargetRequest>? AudioTargets = null);
+    IReadOnlyList<AudioTargetRequest>? AudioTargets = null,
+    IReadOnlyList<OutputRequest>? Outputs = null);
+
+/// <summary>
+/// One stream of the input written out as its own file — how an extraction is expressed. The path resolves
+/// against the media mount its label selects, defaulting to the primary input's, and must differ from the
+/// input and from every other output.
+/// <para>
+/// <c>streamIndex</c> is a single absolute index in the input, not a list. One stream per file is the design:
+/// it is what makes each output addressable as itself, which is why <c>language</c> and <c>title</c> live
+/// here rather than in a <c>metadataOverrides</c> entry — that entry's (input, streamIndex) pair exists to
+/// locate a stream's position in a composed output, and an extracted stream is always position 0 of its own
+/// file. <c>metadataOverrides</c> is refused on an extraction rather than accepted as a second way to say
+/// the same thing.
+/// </para>
+/// <para>
+/// <c>codec</c> defaults to <c>copy</c> — an extraction takes the packets as they are. The only other
+/// accepted values are the text subtitle targets <c>srt</c>, <c>ass</c> and <c>webvtt</c>, for the one case a
+/// copy cannot serve: a subtitle codec with no file form of its own (notably <c>mov_text</c>) cannot be
+/// extracted at all without becoming one.
+/// </para>
+/// </summary>
+public sealed record OutputRequest(
+    string? MountLabel,
+    string Path,
+    int StreamIndex,
+    string? Codec = null,
+    string? Language = null,
+    string? Title = null);
 
 /// <summary>
 /// Re-encodes one mapped audio track instead of copying it — the lever that shrinks a file without touching

@@ -103,4 +103,4 @@ Backend tests use xUnit and Imposter. Required coverage
   relative path joined under the root, blank path rejected, and `../` traversal
   outside the root rejected.
 - The endpoint-level checks (input-exists, output ≠ input, unknown label surfaced as
-  `400`) are covered in [Control API](control-api.md).
+  `400`) are covered in [Control API](control-api/feature.md).

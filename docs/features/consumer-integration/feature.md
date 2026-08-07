@@ -1,8 +1,7 @@
 # Consumer Integration
 
-Status: Implemented (engine side); consumer wiring in progress
 Created: 2026-07-03
-Updated: 2026-07-03
+Updated: 2026-08-07
 
 ## Description
 
@@ -11,7 +10,7 @@ wires it as a cross-app dependency, discovers it at runtime, shares media mounts
 it, and tolerates its absence. [Media Server](https://github.com/alex-de-haas/media-server)
 is the intended reference consumer: it ships a transcode client for this app's control
 API, and the remaining work is a consumer-side job/UI surface to actually request
-transcodes (see [root roadmap](../root.md#roadmap)). The engine-side contract below is
+transcodes (see [root roadmap](../../root.md#roadmap)). The engine-side contract below is
 complete.
 
 ## Declaring the dependency
@@ -36,7 +35,7 @@ prerequisite for the consumer to serve its library.
 Core injects the resolved base URL into the consumer, named after the endpoint alias —
 `HOSTY_DEPENDENCY_TRANSCODE_ENGINE_URL`. The consumer points its HTTP client at that
 value; no address, port, or origin is hard-coded. The client then speaks the
-[Control API](control-api.md): `POST /jobs` to create, `GET /jobs[/{jobId}]` to poll,
+[Control API](../control-api/feature.md): `POST /jobs` to create, `GET /jobs[/{jobId}]` to poll,
 `POST /jobs/{jobId}/cancel` and `DELETE /jobs/{jobId}` to control, `GET /events` to
 consume progress and transitions as they happen, and `GET /hardware` to surface what
 the host can do.
@@ -51,7 +50,7 @@ if writing elsewhere, `outputMountLabel`) on `POST /jobs`. The engine resolves t
 relative input/output paths against the root under that label, so the job lands on the
 filesystem the consumer's library lives on. The label is the only key shared across
 the two apps — Hosty configures each app's mounts independently. See
-[Media mounts](media-mounts.md) for the full contract.
+[Media mounts](../media-mounts.md) for the full contract.
 
 ## Driving off remote events
 
@@ -71,14 +70,17 @@ drive a progress UI.
 Two capabilities exist for consumers that would otherwise have to ship `ffmpeg` and
 `ffprobe` of their own:
 
-- [`POST /probe`](probe-api/feature.md) inspects one file's container and streams and
+- [`POST /probe`](../probe-api/feature.md) inspects one file's container and streams and
   answers in the response. A consumer that also carries its own lighter probe compares
   the two field for field, so this endpoint owns the normalized vocabulary rather than
   passing ffprobe's schema through.
-- [Merge jobs](merge-jobs/feature.md) fold sidecar audio and subtitle files into a
+- [Merge jobs](../merge-jobs/feature.md) fold sidecar audio and subtitle files into a
   video — copying it by default, or re-encoding it in the same pass when the job
   names a codec — and let any output stream's language and title be rewritten on the
   way.
+- [Extract jobs](../extract-jobs/feature.md) run the same operation backwards: each named
+  stream of a container is written out as its own file, in one pass, with its language
+  and title tagged as it goes. The input is never rewritten.
 
 Together they let a consumer drop both binaries from its own image.
 
@@ -109,4 +111,4 @@ expose the control port publicly.
 The cross-app wiring (dependency resolution, the injected URL, mount-label sharing) is
 validated at the Hosty runtime level on the consumer side, not by this app's unit
 tests. On the engine side, the control API and mount-label contracts consumers rely on
-are covered by [Control API](control-api.md) and [Media mounts](media-mounts.md) tests.
+are covered by [Control API](../control-api/feature.md) and [Media mounts](../media-mounts.md) tests.
