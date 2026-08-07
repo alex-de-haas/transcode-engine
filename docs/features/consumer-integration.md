@@ -79,6 +79,9 @@ Two capabilities exist for consumers that would otherwise have to ship `ffmpeg` 
   video — copying it by default, or re-encoding it in the same pass when the job
   names a codec — and let any output stream's language and title be rewritten on the
   way.
+- [Extract jobs](extract-jobs/feature.md) run the same operation backwards: each named
+  stream of a container is written out as its own file, in one pass, with its language
+  and title tagged as it goes. The input is never rewritten.
 
 Together they let a consumer drop both binaries from its own image.
 

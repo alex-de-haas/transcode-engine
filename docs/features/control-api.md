@@ -21,7 +21,7 @@ see [Consumer integration](consumer-integration.md)). JSON is serialized with
 
 | Method &amp; path | Purpose | Success | Notable errors |
 | --- | --- | --- | --- |
-| `POST /jobs` | Create a transcode job | `200` `JobDescriptor` | `400` bad request/path/input |
+| `POST /jobs` | Create a transcode job (or an extraction) | `200` `JobDescriptor` | `400` bad request/path/input |
 | `POST /probe` | Inspect one file's streams | `200` `ProbeResponse` | `400` bad mount/path/not media |
 | `GET /jobs` | List all live snapshots | `200` `JobSnapshot[]` | — |
 | `GET /jobs/{jobId}` | One live snapshot | `200` `JobSnapshot` | `404` unknown id |
@@ -42,13 +42,14 @@ the same media mounts and returns the same error envelope. See
 
 ## `POST /jobs`
 
-Body (`CreateJobRequest`). `inputPath` and `outputPath` are required; everything
-else falls back to an engine default:
+Body (`CreateJobRequest`). `inputPath` is required, and so is exactly one of
+`outputPath` or `outputs`; everything else falls back to an engine default:
 
 | Field | Type | Notes |
 | --- | --- | --- |
 | `inputPath` | string | **Required.** Path relative to the selected media mount (or absolute inside it). Must exist. |
-| `outputPath` | string | **Required.** Where the result is written, relative to the (output) mount. Must differ from the resolved input. |
+| `outputPath` | string? | Where the composed result is written, relative to the (output) mount. Must differ from the resolved input. **Required unless `outputs` is given**, and mutually exclusive with it. |
+| `outputs` | object[]? | Writes each named stream to its own file instead of composing one — an **extraction**. `{ mountLabel?, path, streamIndex, codec?, language?, title? }`, `codec` being `copy` (default), `srt`, `ass` or `webvtt`. Naming any makes every other field in this table invalid, since they all describe a composed output. See [Extract Jobs](extract-jobs/feature.md). |
 | `inputMountLabel` | string? | Selects the media mount the input resolves against. Required when several mounts are configured; optional with exactly one. See [Media mounts](media-mounts.md). |
 | `outputMountLabel` | string? | Media mount for the output. Defaults to `inputMountLabel` when omitted. |
 | `videoCodec` | string? | `h264`, `hevc` (default), or `copy` (remux the video untouched). Aliases: `h265`/`x265` → hevc, `avc`/`x264` → h264. **Defaults to `copy` on a merge** — see `additionalInputs`. |
@@ -81,9 +82,10 @@ the job up:
 | --- | --- | --- |
 | `jobId` | string | Server-assigned GUID. |
 | `inputPath` | string | The resolved absolute input path. |
-| `outputPath` | string | The resolved absolute output path. |
+| `outputPath` | string? | The resolved absolute output path; `null` for an extraction, which composes none. |
 | `durationSeconds` | double? | Input duration from ffprobe; `null` if the probe failed (progress is then byte-only). |
 | `inputSizeBytes` | long? | Input file size; `null` if unreadable. |
+| `outputPaths` | string[]? | Every file the job produces — one entry for a composed job, one per stream for an extraction. Read this when either shape is possible. |
 
 ## The per-job snapshot
 
@@ -93,15 +95,16 @@ the job up:
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `jobId` | string | Server-assigned GUID. |
-| `name` | string? | Output file name (`Path.GetFileName(outputPath)`). |
-| `effectiveHardware` | string? | Encoder family actually selected after auto-detect/fallback: `vaapi`, `videotoolbox`, `amf`, or `software`. `null` while still queued. |
+| `name` | string? | Output file name (`Path.GetFileName(outputPath)`) — the **input's** file name for an extraction, which has no single output to be named after. |
+| `effectiveHardware` | string? | Encoder family actually selected after auto-detect/fallback: `vaapi`, `videotoolbox`, `amf`, or `software`. `null` while still queued, and `none` for an extraction, which runs no encoder at all. |
 | `state` | string | `Queued`, `Running`, `Completed`, `Failed`, or `Cancelled`. |
 | `complete` | bool | `true` once the job finishes successfully. |
 | `percentComplete` | double | `0`–`100`, 2-dp. Derived from `out_time / duration`; `0` while queued and `100` on complete when the duration was unknown. |
 | `fps` | double | ffmpeg's current encode FPS, 2-dp (`0` when not running). |
 | `speed` | double | Encode speed multiple (e.g. `2.5` = 2.5× realtime), 3-dp (`0` when not running). |
-| `outputSizeBytes` | long | Bytes written so far (ffmpeg `total_size`). |
+| `outputSizeBytes` | long | Bytes written so far (ffmpeg `total_size`) — **measured from the files themselves** when a job writes more than one, because `total_size` reports a single muxer's count rather than the run's. See [Extract Jobs](extract-jobs/feature.md#snapshot-and-progress). |
 | `etaSeconds` | double? | Seconds to completion at the current speed; `null` when not running, stalled (speed `0`), or the duration is unknown. |
+| `outputPaths` | string[]? | Every file the job produces (see `JobDescriptor` above). |
 
 `effectiveHardware` is the quickest confirmation that hardware encoding is really in
 effect — a job that reports `vaapi` / `videotoolbox` / `amf` **and** completes

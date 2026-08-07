@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
+using System.Text.Json;
 using System.Threading.Channels;
 
 namespace TranscodeEngine.Api.Transcoding;
@@ -114,6 +115,19 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         var duration = source.DurationSeconds;
         var inputSize = TryFileLength(request.InputPath);
 
+        // An extraction names streams by absolute index, and getting one wrong is only discovered by ffmpeg
+        // after it has read the whole container — an expensive way to learn about a typo on a job that is
+        // disk-bound by nature. A probe that cannot answer skips the check rather than refusing the job: the
+        // same degradation the duration probe already makes, and the job still fails honestly if it was wrong.
+        if (request.IsExtraction &&
+            await ProbeStreamsAsync(request.InputPath, cancellationToken) is { Count: > 0 } streams &&
+            ExtractionOutputError(streams, request.Outputs ?? []) is { } error)
+        {
+            // No paramName: this message is served to an API caller verbatim, and ArgumentException would
+            // append "(Parameter 'request')" to it — an internal detail in a message about their request.
+            throw new ArgumentException(error);
+        }
+
         var jobId = Guid.NewGuid().ToString("n");
         var job = new TranscodeJob(jobId, request, duration, source.VideoPixelFormat);
         _jobs[jobId] = job;
@@ -125,7 +139,7 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
                 "The transcode engine cannot accept the job (the queue is full or the engine is shutting down).");
         }
 
-        return new JobDescriptor(jobId, request.InputPath, request.OutputPath, duration, inputSize);
+        return new JobDescriptor(jobId, request.InputPath, request.OutputPath, duration, inputSize, job.OutputPaths);
     }
 
     public Task CancelAsync(string jobId, CancellationToken cancellationToken)
@@ -153,7 +167,12 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
 
             if (deleteOutput)
             {
-                TryDeleteOutput(job.Request.OutputPath);
+                // Every file, not just the first: an extraction's outputs are one job's result, and leaving
+                // the rest behind would strand files the caller has just asked to be rid of.
+                foreach (var path in job.OutputPaths)
+                {
+                    TryDeleteOutput(path);
+                }
             }
         }
 
@@ -237,11 +256,18 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
             "Job {JobId}: encoding with {Encoder} ({Acceleration}).",
             job.JobId, EncoderName(job.Request.VideoCodec, hardware), HardwareLabel(hardware));
 
-        // Encode to a temp file beside the destination and only rename it onto the real output on a clean
-        // exit — so a failed, cancelled, or interrupted encode can never truncate/destroy a pre-existing
-        // file at outputPath (ffmpeg's -y truncates its target the moment it starts).
-        var outputPath = job.Request.OutputPath;
-        var tempPath = TempOutputPath(outputPath, job.JobId);
+        // Write to a temp file beside each destination and only rename them onto the real outputs on a clean
+        // exit — so a failed, cancelled, or interrupted run can never truncate/destroy a pre-existing file at
+        // an output path (ffmpeg's -y truncates its target the moment it starts).
+        var outputPaths = job.OutputPaths;
+        var tempPaths = outputPaths.Select(path => TempOutputPath(path, job.JobId)).ToList();
+
+        // With more than one muxer, ffmpeg's total_size reports one output's bytes rather than the run's, so
+        // the job measures its own files instead.
+        if (tempPaths.Count > 1)
+        {
+            job.TrackOutputSizes(tempPaths);
+        }
 
         var psi = new ProcessStartInfo(_settings.FfmpegPath)
         {
@@ -249,12 +275,15 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
             RedirectStandardError = true,
             UseShellExecute = false,
         };
-        foreach (var arg in BuildArguments(job, hardware, tempPath))
+        foreach (var arg in BuildArguments(job, hardware, tempPaths))
         {
             psi.ArgumentList.Add(arg);
         }
 
-        Directory.CreateDirectory(Path.GetDirectoryName(outputPath) ?? ".");
+        foreach (var directory in outputPaths.Select(path => Path.GetDirectoryName(path) ?? ".").Distinct(StringComparer.Ordinal))
+        {
+            Directory.CreateDirectory(directory);
+        }
 
         var stderrTail = new StderrTail();
         try
@@ -332,7 +361,7 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
                 job.Complete(JobState.Cancelled);
                 _logger.LogInformation("Job {JobId} cancelled.", job.JobId);
             }
-            else if (process.ExitCode == 0 && TryPublishOutput(job, tempPath, outputPath, stderrTail))
+            else if (process.ExitCode == 0 && TryPublishOutputs(job, tempPaths, outputPaths, stderrTail))
             {
                 job.Complete(JobState.Completed);
                 JobCompleted?.Invoke(this, job.JobId);
@@ -358,36 +387,63 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
             // kill is a no-op instead of touching a disposed object.
             job.DetachProcess();
 
-            // Only ever discard the temp encode — the pre-existing file at outputPath is never touched on
-            // failure/cancel. A completed job has already renamed its temp onto outputPath.
+            // Only ever discard the temp files — a pre-existing file at an output path is never touched on
+            // failure/cancel. A completed job has already renamed its temps onto the outputs.
             if (job.State is JobState.Cancelled or JobState.Failed)
             {
-                TryDeleteOutput(tempPath);
+                foreach (var tempPath in tempPaths)
+                {
+                    TryDeleteOutput(tempPath);
+                }
             }
 
             PruneTerminalJobs();
         }
     }
 
-    /// <summary>Atomically renames the finished temp encode onto its real output path (replacing any
-    /// existing file — the successful re-encode is the new good result). Returns false, and marks the job
-    /// failed, if the rename can't be done, so a broken publish is never reported as a success.</summary>
-    private bool TryPublishOutput(TranscodeJob job, string tempPath, string outputPath, StderrTail stderrTail)
+    /// <summary>
+    /// Renames each finished temp onto its real output path (replacing any existing file — the successful
+    /// run is the new good result). Returns false, and marks the job failed, if any rename can't be done, so
+    /// a broken publish is never reported as a success.
+    /// <para>
+    /// A run writing several files publishes them in order, and the set is <b>not</b> atomic. A failure
+    /// partway through is reported with the paths that did land, rather than rolled back: the files already
+    /// published are files the caller asked for, and deleting them to restore tidiness would destroy the
+    /// result of work that succeeded. The consumer's contract matches — it records what exists and treats
+    /// the job as failed.
+    /// </para></summary>
+    internal bool TryPublishOutputs(
+        TranscodeJob job,
+        IReadOnlyList<string> tempPaths,
+        IReadOnlyList<string> outputPaths,
+        StderrTail stderrTail)
     {
-        try
+        var published = new List<string>(outputPaths.Count);
+        for (var index = 0; index < outputPaths.Count; index++)
         {
-            File.Move(tempPath, outputPath, overwrite: true);
-            return true;
+            try
+            {
+                File.Move(tempPaths[index], outputPaths[index], overwrite: true);
+                published.Add(outputPaths[index]);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                job.Fail();
+                JobFailed?.Invoke(this, job.JobId);
+                _logger.LogError(
+                    exception,
+                    "Job {JobId}: ffmpeg succeeded but publishing the output {Output} failed. {Published} {Tail}",
+                    job.JobId,
+                    outputPaths[index],
+                    published.Count > 0
+                        ? $"These outputs were published and are left in place: {string.Join(", ", published)}."
+                        : "Nothing was published.",
+                    stderrTail.Text);
+                return false;
+            }
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            job.Fail();
-            JobFailed?.Invoke(this, job.JobId);
-            _logger.LogError(
-                exception, "Job {JobId}: ffmpeg succeeded but publishing the output {Output} failed. {Tail}",
-                job.JobId, outputPath, stderrTail.Text);
-            return false;
-        }
+
+        return true;
     }
 
     /// <summary>The in-progress encode target: a hidden temp file beside the real output that preserves its
@@ -467,12 +523,20 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
     /// An optional downscale is applied with the GPU scaler on VAAPI and the CPU <c>scale</c> filter
     /// elsewhere. Audio and (for Matroska outputs) subtitle/attachment
     /// streams are copied — all of them, or the explicitly selected subset — so nothing is silently dropped.</summary>
-    internal List<string> BuildArguments(TranscodeJob job, TranscodeHardware hardware, string? destinationPath = null)
+    internal List<string> BuildArguments(TranscodeJob job, TranscodeHardware hardware, IReadOnlyList<string>? destinations = null)
     {
         var request = job.Request;
+
+        // An extraction composes nothing: it maps no video, runs no encoder, and writes one file per stream.
+        // None of the argument construction below applies to it.
+        if (request.IsExtraction)
+        {
+            return BuildExtractionArguments(request, destinations);
+        }
+
         // The muxer is inferred from the destination's extension; the temp path preserves it, so the
         // keepSubtitles (.mkv) decision below is unaffected whether we write the temp or the final path.
-        var output = destinationPath ?? request.OutputPath;
+        var output = destinations is { Count: > 0 } ? destinations[0] : request.OutputPath!;
         var args = new List<string> { "-hide_banner", "-nostdin", "-y" };
 
         // Hardware decode setup only matters when we actually re-encode; a video copy never touches the GPU.
@@ -526,7 +590,7 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         // Subtitles (and the attachment fonts that ASS subs render with) only when the output is Matroska:
         // mkv carries any subtitle/attachment codec, so a stream copy always works. Other containers (e.g.
         // mp4) reject most subtitle codecs on copy, which would fail the whole job, so we omit them there.
-        var keepSubtitles = request.OutputPath.EndsWith(".mkv", StringComparison.OrdinalIgnoreCase);
+        var keepSubtitles = request.OutputPath?.EndsWith(".mkv", StringComparison.OrdinalIgnoreCase) == true;
 
         // The ordered list of mapped streams per type. Output positions are assigned in map order, so this
         // is what turns an (input, absolute index) pair into the position -disposition and -metadata want.
@@ -577,6 +641,125 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         args.Add("-nostats");
         args.Add(output);
         return args;
+    }
+
+    /// <summary>
+    /// Builds the arguments for an extraction: one input, one output group per named stream, and none of the
+    /// three things every composed job emits — no <c>-map 0:v:0</c>, no <c>-c:v</c>, and no hardware decode
+    /// setup, since nothing is decoded or encoded.
+    /// <para>
+    /// <c>-progress</c> and <c>-nostats</c> are global options, so unlike the composed path (where they sit
+    /// just before the single output, which reads the same) they have to precede the <b>first</b> output.
+    /// Everything after that is per-output and is emitted ahead of the file it belongs to;
+    /// <c>-metadata:s:0</c> addresses that output's only stream, which is what one-stream-per-file buys.
+    /// </para></summary>
+    private static List<string> BuildExtractionArguments(TranscodeJobRequest request, IReadOnlyList<string>? destinations)
+    {
+        var outputs = request.Outputs ?? [];
+        var args = new List<string> { "-hide_banner", "-nostdin", "-y", "-i", request.InputPath, "-progress", "pipe:1", "-nostats" };
+
+        for (var index = 0; index < outputs.Count; index++)
+        {
+            var output = outputs[index];
+            args.Add("-map");
+            args.Add($"0:{output.StreamIndex.ToString(CultureInfo.InvariantCulture)}");
+
+            if (output.Codec is ExtractionCodec.Copy)
+            {
+                args.Add("-c");
+                args.Add("copy");
+            }
+            else
+            {
+                // Only ever a subtitle: the endpoint refuses a text codec on anything else.
+                args.Add("-c:s");
+                args.Add(SubtitleEncoder(output.Codec));
+            }
+
+            // A field the request left null is not emitted, so the source stream's own tag survives into the
+            // extracted file — the same rule a composed job's metadata overrides follow.
+            if (output.Language is { Length: > 0 } language)
+            {
+                args.Add("-metadata:s:0");
+                args.Add($"language={language}");
+            }
+
+            if (output.Title is { Length: > 0 } title)
+            {
+                args.Add("-metadata:s:0");
+                args.Add($"title={title}");
+            }
+
+            args.Add(destinations is { Count: > 0 } ? destinations[index] : output.Path);
+        }
+
+        return args;
+    }
+
+    private static string SubtitleEncoder(ExtractionCodec codec) => codec switch
+    {
+        ExtractionCodec.Srt => "srt",
+        ExtractionCodec.Ass => "ass",
+        ExtractionCodec.WebVtt => "webvtt",
+        _ => throw new ArgumentOutOfRangeException(nameof(codec)),
+    };
+
+    /// <summary>One stream of the input as the create-time probe reports it. <see cref="Kind"/> is ffprobe's
+    /// <c>codec_type</c> (<c>video</c>/<c>audio</c>/<c>subtitle</c>) and <see cref="Codec"/> its
+    /// <c>codec_name</c>.</summary>
+    internal sealed record ProbedStream(int Index, string Kind, string Codec);
+
+    /// <summary>Subtitle codecs that are pictures rather than text. They cannot become an <c>.srt</c> by any
+    /// route ffmpeg offers — turning one into text is OCR, a different mechanism with a different dependency
+    /// — so aiming one at a text file is refused up front instead of failing the job after it has read the
+    /// whole container.</summary>
+    private static readonly HashSet<string> BitmapSubtitleCodecs = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle", "xsub",
+    };
+
+    /// <summary>Extensions that hold subtitles as text, and therefore cannot carry a bitmap subtitle.</summary>
+    private static readonly HashSet<string> TextSubtitleExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".srt", ".ass", ".ssa", ".vtt",
+    };
+
+    /// <summary>
+    /// Checks every extraction output against the input's real streams. Pure, so the rules can be tested
+    /// without ffmpeg. Returns the first problem as a message, or null when every output is extractable.
+    /// </summary>
+    internal static string? ExtractionOutputError(
+        IReadOnlyList<ProbedStream> streams,
+        IReadOnlyList<ExtractionOutput> outputs)
+    {
+        foreach (var output in outputs)
+        {
+            var stream = streams.FirstOrDefault(candidate => candidate.Index == output.StreamIndex);
+            if (stream is null)
+            {
+                return $"the input has no stream {output.StreamIndex.ToString(CultureInfo.InvariantCulture)}.";
+            }
+
+            // Video is deliberately not extractable: nothing has asked for it, and a raw elementary video
+            // stream is a different problem from a track that is already a file elsewhere.
+            if (stream.Kind is not ("audio" or "subtitle"))
+            {
+                return $"stream {output.StreamIndex.ToString(CultureInfo.InvariantCulture)} is {stream.Kind}; only audio and subtitle streams can be extracted.";
+            }
+
+            if (output.Codec is not ExtractionCodec.Copy && stream.Kind is not "subtitle")
+            {
+                return $"stream {output.StreamIndex.ToString(CultureInfo.InvariantCulture)} is {stream.Kind}; a text subtitle codec applies only to a subtitle stream.";
+            }
+
+            if (TextSubtitleExtensions.Contains(Path.GetExtension(output.Path)) &&
+                BitmapSubtitleCodecs.Contains(stream.Codec))
+            {
+                return $"stream {output.StreamIndex.ToString(CultureInfo.InvariantCulture)} is {stream.Codec}, a picture-based subtitle, and cannot be written as text to '{Path.GetFileName(output.Path)}'.";
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -1178,6 +1361,114 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         return new SourceProbe(duration, pixelFormat);
     }
 
+    /// <summary>
+    /// Lists the input's streams for an extraction's create-time check. A second ffprobe rather than an
+    /// extension of <see cref="ProbeSourceAsync"/>: that one asks about <c>v:0</c> only and every composed
+    /// job depends on its exact shape, while this runs on the rare extraction path where one more probe
+    /// costs nothing. Returns an empty list when the input cannot be read, which the caller reads as "cannot
+    /// check" rather than "no streams" — degrading like every other probe here, never failing the create.
+    /// </summary>
+    private async Task<IReadOnlyList<ProbedStream>> ProbeStreamsAsync(string inputPath, CancellationToken cancellationToken)
+    {
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(ProbeTimeout);
+        var probeToken = timeoutCts.Token;
+        try
+        {
+            var psi = new ProcessStartInfo(_settings.FfprobePath)
+            {
+                RedirectStandardOutput = true,
+                // As in ProbeSourceAsync: -v quiet silences stderr and nothing reads it, so leaving it
+                // un-redirected avoids a full pipe deadlocking ffprobe.
+                RedirectStandardError = false,
+                UseShellExecute = false,
+            };
+            foreach (var arg in new[]
+            {
+                "-v", "quiet",
+                "-show_entries", "stream=index,codec_type,codec_name",
+                // JSON rather than the flat key=value form the duration probe uses: with several streams the
+                // flat output gives no reliable boundary between them.
+                "-of", "json",
+                inputPath,
+            })
+            {
+                psi.ArgumentList.Add(arg);
+            }
+
+            using var process = Process.Start(psi);
+            if (process is null)
+            {
+                return [];
+            }
+
+            try
+            {
+                var stdout = await process.StandardOutput.ReadToEndAsync(probeToken);
+                await process.WaitForExitAsync(probeToken);
+                return ParseProbedStreams(stdout);
+            }
+            catch (OperationCanceledException)
+            {
+                TryKillProcess(process);
+                throw;
+            }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                "Listing the streams of {Input} timed out after {Timeout}; the extraction's stream selection goes unchecked.",
+                inputPath, ProbeTimeout);
+            return [];
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                exception, "Could not list the streams of {Input}; the extraction's stream selection goes unchecked.", inputPath);
+            return [];
+        }
+    }
+
+    /// <summary>Reads ffprobe's JSON stream list. A malformed document or an entry without an index yields
+    /// nothing for that entry rather than throwing — this feeds a validation check, and failing to parse must
+    /// not be worse than not having probed at all.</summary>
+    internal static IReadOnlyList<ProbedStream> ParseProbedStreams(string json)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(json);
+            if (!document.RootElement.TryGetProperty("streams", out var streams) ||
+                streams.ValueKind != JsonValueKind.Array)
+            {
+                return [];
+            }
+
+            var result = new List<ProbedStream>(streams.GetArrayLength());
+            foreach (var stream in streams.EnumerateArray())
+            {
+                if (stream.ValueKind != JsonValueKind.Object ||
+                    !stream.TryGetProperty("index", out var index) ||
+                    index.ValueKind != JsonValueKind.Number)
+                {
+                    continue;
+                }
+
+                result.Add(new ProbedStream(index.GetInt32(), Text(stream, "codec_type"), Text(stream, "codec_name")));
+            }
+
+            return result;
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
+
+        static string Text(JsonElement element, string name) =>
+            element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+                ? value.GetString() ?? string.Empty
+                : string.Empty;
+    }
+
     private static long? TryFileLength(string path)
     {
         try
@@ -1241,7 +1532,7 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
     }
 
     /// <summary>Keeps the last few stderr lines so a failure can be logged with ffmpeg's own message.</summary>
-    private sealed class StderrTail
+    internal sealed class StderrTail
     {
         private const int MaxLines = 20;
         private readonly Queue<string> _lines = new();

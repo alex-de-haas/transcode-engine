@@ -22,6 +22,14 @@ public static class TranscodeEndpoints
                 return Results.BadRequest(new { error = "inputPath is required." });
             }
 
+            // Naming outputs makes the job an extraction, which shares this endpoint but not the shape below:
+            // it composes nothing, so none of the composition arguments apply and it takes its own path out
+            // of here rather than threading a flag through every check.
+            if (request.Outputs is { Count: > 0 } extractionOutputs)
+            {
+                return await CreateExtractionAsync(request, extractionOutputs, engine, settings, ct);
+            }
+
             if (string.IsNullOrWhiteSpace(request.OutputPath))
             {
                 return Results.BadRequest(new { error = "outputPath is required." });
@@ -331,6 +339,169 @@ public static class TranscodeEndpoints
                 stream.Unsubscribe(id);
             }
         });
+    }
+
+    /// <summary>
+    /// Validates and creates an extraction: one input, one output file per named stream. Everything a
+    /// composed output needs is refused here rather than ignored — an extraction has no picture to encode,
+    /// scale or accelerate, and no single output to select tracks into.
+    /// <para>
+    /// The check that a named stream exists and is extractable lives in the engine, not here: it needs the
+    /// input's streams, and the engine already probes the input when it creates a job. Its refusals arrive as
+    /// <see cref="ArgumentException"/> and become the same 400 as everything else, so a caller cannot tell
+    /// which side of the line a rule sat on.
+    /// </para>
+    /// </summary>
+    private static async Task<IResult> CreateExtractionAsync(
+        CreateJobRequest request,
+        IReadOnlyList<OutputRequest> outputs,
+        ITranscodeEngine engine,
+        TranscodeEngineSettings settings,
+        CancellationToken cancellationToken)
+    {
+        if (ExtractionConflictError(request) is { } conflict)
+        {
+            return Results.BadRequest(new { error = conflict });
+        }
+
+        string inputPath;
+        try
+        {
+            inputPath = settings.ResolveMediaPath(request.InputMountLabel, request.InputPath);
+        }
+        catch (ArgumentException exception)
+        {
+            return Results.BadRequest(new { error = exception.Message });
+        }
+
+        if (!File.Exists(inputPath))
+        {
+            return Results.BadRequest(new { error = $"input '{request.InputPath}' does not exist on the media mount." });
+        }
+
+        var resolved = new List<ExtractionOutput>(outputs.Count);
+        var claimed = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var output in outputs)
+        {
+            if (string.IsNullOrWhiteSpace(output.Path))
+            {
+                return Results.BadRequest(new { error = "every output needs a path." });
+            }
+
+            if (output.StreamIndex < 0)
+            {
+                return Results.BadRequest(new { error = "stream indexes must be non-negative." });
+            }
+
+            if (!TryParseExtractionCodec(output.Codec, out var codec))
+            {
+                return Results.BadRequest(new { error = $"output codec '{output.Codec}' is not supported (use 'copy', 'srt', 'ass' or 'webvtt')." });
+            }
+
+            string path;
+            try
+            {
+                path = settings.ResolveMediaPath(output.MountLabel ?? request.InputMountLabel, output.Path);
+            }
+            catch (ArgumentException exception)
+            {
+                return Results.BadRequest(new { error = exception.Message });
+            }
+
+            if (string.Equals(path, inputPath, StringComparison.Ordinal))
+            {
+                return Results.BadRequest(new { error = "every output must differ from inputPath." });
+            }
+
+            // Two outputs at one path would race each other's publish and leave whichever finished last,
+            // silently losing a track the caller asked for.
+            if (!claimed.Add(path))
+            {
+                return Results.BadRequest(new { error = $"two outputs write to '{output.Path}'." });
+            }
+
+            resolved.Add(new ExtractionOutput(path, output.StreamIndex, codec, Clean(output.Language), Clean(output.Title)));
+        }
+
+        // The video codec and quality level are structurally required by the request record but mean nothing
+        // here — TranscodeJobRequest.IsExtraction is what every consumer of it branches on.
+        var jobRequest = new TranscodeJobRequest(
+            inputPath,
+            OutputPath: null,
+            TranscodeVideoCodec.Hevc,
+            TranscodeHardware.None,
+            QualityLevel: null,
+            Outputs: resolved);
+
+        try
+        {
+            var descriptor = await engine.CreateAsync(jobRequest, cancellationToken);
+            return Results.Ok(descriptor);
+        }
+        catch (ArgumentException exception)
+        {
+            return Results.BadRequest(new { error = exception.Message });
+        }
+    }
+
+    /// <summary>
+    /// The composed-output fields an extraction cannot carry. Each is refused rather than ignored, for the
+    /// reason the encode-only knobs are refused on a video copy: accepting a field that cannot take effect
+    /// reports success for a job that does something other than what was asked.
+    /// </summary>
+    private static string? ExtractionConflictError(CreateJobRequest request) => request switch
+    {
+        { OutputPath: { } path } when !string.IsNullOrWhiteSpace(path) =>
+            "outputPath and outputs are mutually exclusive: an extraction writes each stream to its own file and composes none.",
+        { VideoCodec: { } codec } when !string.IsNullOrWhiteSpace(codec) =>
+            "videoCodec cannot be set on an extraction: it produces no video output.",
+        { MaxHeight: not null } =>
+            "maxHeight cannot be set on an extraction: it produces no video output.",
+        { QualityLevel: { } level } when !string.IsNullOrWhiteSpace(level) =>
+            "qualityLevel cannot be set on an extraction: it produces no video output.",
+        // Nothing is decoded or encoded, so there is nothing to accelerate. 'auto' is accepted and inert
+        // because it is what a client sends by default, and failing the ordinary call over a field that means
+        // nothing here would be gratuitous.
+        { HardwareAcceleration: { } hardware } when !string.IsNullOrWhiteSpace(hardware) &&
+            !string.Equals(hardware.Trim(), "auto", StringComparison.OrdinalIgnoreCase) =>
+            "hardwareAcceleration cannot be set on an extraction: nothing is decoded or encoded. Omit it or pass 'auto'.",
+        { AdditionalInputs.Count: > 0 } =>
+            "additionalInputs cannot be set on an extraction: it reads one input and composes nothing.",
+        { AudioStreamIndexes: not null } or { SubtitleStreamIndexes: not null } =>
+            "audioStreamIndexes and subtitleStreamIndexes select tracks into a composed output; an extraction names its streams in outputs.",
+        { DefaultAudioStreamIndex: not null } or { DefaultSubtitleStreamIndex: not null } =>
+            "a default track belongs to a composed output; an extraction writes one stream per file.",
+        { AudioTargets.Count: > 0 } =>
+            "audioTargets re-encode tracks of a composed output; an extraction copies its streams.",
+        { MetadataOverrides.Count: > 0 } =>
+            "metadataOverrides address a composed output's stream positions; set language and title on the output itself.",
+        _ => null,
+    };
+
+    /// <summary>Whitespace is not a value: argument construction emits a field only when it has content, so
+    /// carrying "" through would claim a metadata write the output never gets.</summary>
+    private static string? Clean(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    private static bool TryParseExtractionCodec(string? raw, out ExtractionCodec codec)
+    {
+        switch (raw?.Trim().ToLowerInvariant())
+        {
+            case null or "" or "copy":
+                codec = ExtractionCodec.Copy; // default — an extraction takes the packets as they are
+                return true;
+            case "srt" or "subrip":
+                codec = ExtractionCodec.Srt;
+                return true;
+            case "ass" or "ssa":
+                codec = ExtractionCodec.Ass;
+                return true;
+            case "webvtt" or "vtt":
+                codec = ExtractionCodec.WebVtt;
+                return true;
+            default:
+                codec = default;
+                return false;
+        }
     }
 
     /// <summary>

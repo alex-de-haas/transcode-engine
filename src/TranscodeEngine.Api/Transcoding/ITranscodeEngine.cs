@@ -53,6 +53,35 @@ public enum TranscodeHardware
     None,
 }
 
+/// <summary>What an extracted stream is written as. <see cref="Copy"/> is the whole point — an extraction
+/// takes the packets as they are — and the text targets exist for the one case that cannot: a subtitle codec
+/// with no file form of its own (notably <c>mov_text</c>) has to become one to be extracted at all. There is
+/// deliberately no audio target here: re-encoding on the way out would make this a second, worse encoder
+/// surface, and <see cref="AudioTarget"/> already serves a composed output.</summary>
+public enum ExtractionCodec
+{
+    Copy,
+    Srt,
+    Ass,
+    WebVtt,
+}
+
+/// <summary>
+/// One stream of the primary input written out as its own file. <see cref="Path"/> is already resolved
+/// against a media mount, and <see cref="StreamIndex"/> is a single absolute index in the input — not a list,
+/// which is the design rather than a limitation: one stream per file is what makes each output addressable as
+/// itself, so <see cref="Language"/> and <see cref="Title"/> sit here instead of going through a
+/// <see cref="StreamMetadataOverride"/>. An override's (input, streamIndex) pair exists to locate a stream's
+/// position in a composed output; here position 0 of its own file is the only place the stream can be.
+/// A null language or title leaves whatever the source stream carries.
+/// </summary>
+public sealed record ExtractionOutput(
+    string Path,
+    int StreamIndex,
+    ExtractionCodec Codec = ExtractionCodec.Copy,
+    string? Language = null,
+    string? Title = null);
+
 /// <summary>A resolved transcode request: absolute input/output paths (already validated against the
 /// media mounts by the endpoint) plus the encode parameters. The engine owns no path resolution.
 /// <para>
@@ -64,10 +93,16 @@ public enum TranscodeHardware
 /// to copy, in output order; <c>null</c> copies all of that type. <see cref="DefaultAudioStreamIndex"/>/
 /// <see cref="DefaultSubtitleStreamIndex"/> mark one mapped track as the container default (requires the
 /// matching explicit index list); <c>null</c> keeps the source dispositions.
+/// </para>
+/// <para>
+/// <see cref="Outputs"/> is the other shape this request takes: naming any makes the job an <b>extraction</b>,
+/// which writes each named stream to its own file and produces no composed output at all. Every field above
+/// describes a composed output and is refused alongside it — there is no picture in an extraction to encode,
+/// scale or accelerate. <see cref="OutputPath"/> is null exactly then.
 /// </para></summary>
 public sealed record TranscodeJobRequest(
     string InputPath,
-    string OutputPath,
+    string? OutputPath,
     TranscodeVideoCodec VideoCodec,
     TranscodeHardware HardwareAcceleration,
     TranscodeQualityLevel? QualityLevel,
@@ -79,7 +114,20 @@ public sealed record TranscodeJobRequest(
     int? DefaultSubtitleStreamIndex = null,
     IReadOnlyList<AdditionalInput>? AdditionalInputs = null,
     IReadOnlyList<StreamMetadataOverride>? MetadataOverrides = null,
-    IReadOnlyList<AudioTarget>? AudioTargets = null);
+    IReadOnlyList<AudioTarget>? AudioTargets = null,
+    IReadOnlyList<ExtractionOutput>? Outputs = null)
+{
+    /// <summary>Whether this job writes its input's streams out as separate files rather than composing one.</summary>
+    public bool IsExtraction => Outputs is { Count: > 0 };
+
+    /// <summary>Every file this job produces, in the order it declares them. One entry for a composed job,
+    /// one per stream for an extraction — the single list everything downstream (publishing, deletion,
+    /// snapshots) works from, so neither shape needs a special case of its own.</summary>
+    public IReadOnlyList<string> OutputPaths =>
+        Outputs is { Count: > 0 } outputs ? outputs.Select(output => output.Path).ToList()
+        : OutputPath is { Length: > 0 } path ? [path]
+        : [];
+}
 
 /// <summary>
 /// Re-encodes one mapped audio track instead of copying it. Addressed the same way a metadata override is —
@@ -125,13 +173,17 @@ public sealed record StreamMetadataOverride(
     string? Language = null,
     string? Title = null);
 
-/// <summary>What is known about a job right after it is created (before the worker picks it up).</summary>
+/// <summary>What is known about a job right after it is created (before the worker picks it up).
+/// <see cref="OutputPath"/> is the composed output and is null for an extraction, which has none;
+/// <see cref="OutputPaths"/> lists every file the job will produce and is the field to read when either
+/// shape is possible.</summary>
 public sealed record JobDescriptor(
     string JobId,
     string InputPath,
-    string OutputPath,
+    string? OutputPath,
     double? DurationSeconds,
-    long? InputSizeBytes);
+    long? InputSizeBytes,
+    IReadOnlyList<string>? OutputPaths = null);
 
 /// <summary>A live, in-memory progress snapshot (never persisted). <see cref="EffectiveHardware"/> is the
 /// encoder family actually selected after auto-detect/fallback (<c>vaapi</c> / <c>videotoolbox</c> /
@@ -147,7 +199,8 @@ public sealed record JobSnapshot(
     double Fps,
     double Speed,
     long OutputSizeBytes,
-    double? EtaSeconds);
+    double? EtaSeconds,
+    IReadOnlyList<string>? OutputPaths = null);
 
 /// <summary>
 /// Thin wrapper over ffmpeg. Owns no persistence; surfaces live snapshots and raises events for the
@@ -156,14 +209,21 @@ public sealed record JobSnapshot(
 public interface ITranscodeEngine
 {
     /// <summary>Creates a job (probes the input for its duration, enqueues it, returns the descriptor).
-    /// The job runs as soon as a worker is free.</summary>
+    /// The job runs as soon as a worker is free.
+    /// <para>
+    /// Throws <see cref="ArgumentException"/> when an extraction names a stream the input does not have, or
+    /// one whose codec the requested file cannot carry. That check lives here rather than in the endpoint
+    /// because it needs the input's streams, and this is where the input is already probed — and it is worth
+    /// paying for: an extraction is disk-bound, so a typo discovered by ffmpeg is a typo discovered after
+    /// reading the whole container.
+    /// </para></summary>
     Task<JobDescriptor> CreateAsync(TranscodeJobRequest request, CancellationToken cancellationToken);
 
     /// <summary>Cancels a running or queued job (kills the ffmpeg process if it is running).</summary>
     Task CancelAsync(string jobId, CancellationToken cancellationToken);
 
     /// <summary>Forgets a job and, when <paramref name="deleteOutput"/> is set, deletes its (partial)
-    /// output file.</summary>
+    /// output files — every one of them, since an extraction's outputs are one job's result and not several.</summary>
     Task RemoveAsync(string jobId, bool deleteOutput, CancellationToken cancellationToken);
 
     JobSnapshot? GetSnapshot(string jobId);
