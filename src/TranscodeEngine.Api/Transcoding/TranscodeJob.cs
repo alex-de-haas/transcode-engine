@@ -30,7 +30,10 @@ internal sealed class TranscodeJob
     private double _outTimeSeconds;
     private long _outputSize;
     private DateTimeOffset? _completedAt;
-    private IReadOnlyList<string>? _sizeProbePaths;
+
+    // Read without the lock: it is written once, by the worker, before ffmpeg starts, and only read after.
+    // Keeping it out of the lock is what lets the measurement below happen outside it.
+    private volatile IReadOnlyList<string>? _sizeProbePaths;
 
     public TranscodeJob(
         string jobId,
@@ -98,13 +101,7 @@ internal sealed class TranscodeJob
     /// first output's size and silently understates the rest. Composed jobs leave this unset and keep
     /// reading <c>total_size</c>, which is exact when there is a single muxer.
     /// </summary>
-    public void TrackOutputSizes(IReadOnlyList<string> paths)
-    {
-        lock (_gate)
-        {
-            _sizeProbePaths = paths;
-        }
-    }
+    public void TrackOutputSizes(IReadOnlyList<string> paths) => _sizeProbePaths = paths;
 
     /// <summary>Clears the process reference once it has exited and been disposed, so a later
     /// cancel/shutdown kill never touches a disposed <see cref="Process"/>.</summary>
@@ -158,6 +155,21 @@ internal sealed class TranscodeJob
         var key = line[..separator].Trim();
         var value = line[(separator + 1)..].Trim();
 
+        // ffmpeg closes each progress block with a "progress" key, so a tracked job measures its files once
+        // per tick. The stat calls happen **outside** the lock on purpose: ToSnapshot takes the same one on
+        // every SSE poll and on every cancel, and holding it across per-file I/O would make a slow disk — or
+        // simply many outputs — contend with the whole job's state.
+        if (key == "progress" && _sizeProbePaths is { Count: > 0 } paths)
+        {
+            var measured = SumFileLengths(paths);
+            lock (_gate)
+            {
+                _outputSize = measured;
+            }
+
+            return;
+        }
+
         lock (_gate)
         {
             switch (key)
@@ -169,14 +181,9 @@ internal sealed class TranscodeJob
                 case "fps" when double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var fps):
                     _fps = fps;
                     break;
-                // Only trustworthy with a single muxer; a tracked job measures its files instead (below).
+                // Only trustworthy with a single muxer; a tracked job measures its files instead (above).
                 case "total_size" when _sizeProbePaths is null && long.TryParse(value, out var size):
                     _outputSize = size;
-                    break;
-                // ffmpeg closes each progress block with a "progress" key, so this re-measures once per tick
-                // rather than once per line.
-                case "progress" when _sizeProbePaths is { Count: > 0 } paths:
-                    _outputSize = SumFileLengths(paths);
                     break;
                 case "speed":
                     var trimmed = value.TrimEnd('x', ' ');

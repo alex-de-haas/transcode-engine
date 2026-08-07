@@ -18,11 +18,11 @@ job/SSE control API, a shared host-path mount for zero-copy file hand-off, and a
 cross-app dependency.
 
 Full documentation lives in [`docs/`](docs/root.md) — start at [`docs/root.md`](docs/root.md) for the
-architecture overview, then the per-subsystem feature docs ([control API](docs/features/control-api.md),
+architecture overview, then the per-subsystem feature docs ([control API](docs/features/control-api/feature.md),
 [transcode engine](docs/features/transcode-engine/feature.md),
 [hardware acceleration](docs/features/hardware-acceleration/feature.md),
 [media mounts](docs/features/media-mounts.md),
-[consumer integration](docs/features/consumer-integration.md), and more).
+[consumer integration](docs/features/consumer-integration/feature.md), and more).
 
 ## Status
 

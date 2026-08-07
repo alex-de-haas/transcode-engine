@@ -13,6 +13,23 @@ public static class TranscodeEndpoints
     private static readonly JsonSerializerOptions EventJson = new(JsonSerializerDefaults.Web);
     private static readonly TimeSpan KeepaliveInterval = TimeSpan.FromSeconds(15);
 
+    /// <summary>
+    /// How two resolved paths are compared for "the same file". Ordinal is right on Linux, which the docker
+    /// runtime is; a native macOS or Windows host is normally case-insensitive, where two spellings name one
+    /// file — and an output that is really the input, or really another output, is published over it by
+    /// <c>File.Move(overwrite: true)</c> once ffmpeg succeeds.
+    /// <para>
+    /// The heuristic is deliberately wrong in the safe direction: being case-insensitive on a volume that is
+    /// not merely refuses a request the caller can rephrase, while being ordinal on a volume that is
+    /// case-insensitive destroys a file.
+    /// </para>
+    /// </summary>
+    private static readonly StringComparison PathComparison =
+        OperatingSystem.IsLinux() ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase;
+
+    private static readonly StringComparer PathComparer =
+        OperatingSystem.IsLinux() ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
+
     public static void MapTranscodeEndpoints(this IEndpointRouteBuilder app)
     {
         app.MapPost("/jobs", async (CreateJobRequest request, ITranscodeEngine engine, TranscodeEngineSettings settings, CancellationToken ct) =>
@@ -177,7 +194,7 @@ public static class TranscodeEndpoints
                 return Results.BadRequest(new { error = $"input '{request.InputPath}' does not exist on the media mount." });
             }
 
-            if (string.Equals(inputPath, outputPath, StringComparison.Ordinal))
+            if (string.Equals(inputPath, outputPath, PathComparison))
             {
                 return Results.BadRequest(new { error = "outputPath must differ from inputPath." });
             }
@@ -202,7 +219,7 @@ public static class TranscodeEndpoints
                     return Results.BadRequest(new { error = $"input '{input.Path}' does not exist on the media mount." });
                 }
 
-                if (string.Equals(resolved, outputPath, StringComparison.Ordinal))
+                if (string.Equals(resolved, outputPath, PathComparison))
                 {
                     return Results.BadRequest(new { error = "outputPath must differ from every input." });
                 }
@@ -380,9 +397,16 @@ public static class TranscodeEndpoints
         }
 
         var resolved = new List<ExtractionOutput>(outputs.Count);
-        var claimed = new HashSet<string>(StringComparer.Ordinal);
+        var claimed = new HashSet<string>(PathComparer);
         foreach (var output in outputs)
         {
+            // A JSON array may hold a literal null, which the non-nullable element type does not prevent.
+            // Reading through it would be a 500 for what is an ordinary malformed request.
+            if (output is null)
+            {
+                return Results.BadRequest(new { error = "every entry in outputs must be an object with a path." });
+            }
+
             if (string.IsNullOrWhiteSpace(output.Path))
             {
                 return Results.BadRequest(new { error = "every output needs a path." });
@@ -401,14 +425,18 @@ public static class TranscodeEndpoints
             string path;
             try
             {
-                path = settings.ResolveMediaPath(output.MountLabel ?? request.InputMountLabel, output.Path);
+                // outputMountLabel means the same thing here as it does for a composed output — the mount
+                // the results are written to — so it is the default for every entry that names none. It fell
+                // through to the input's mount before, which silently ignored a field the caller had set.
+                path = settings.ResolveMediaPath(
+                    output.MountLabel ?? request.OutputMountLabel ?? request.InputMountLabel, output.Path);
             }
             catch (ArgumentException exception)
             {
                 return Results.BadRequest(new { error = exception.Message });
             }
 
-            if (string.Equals(path, inputPath, StringComparison.Ordinal))
+            if (string.Equals(path, inputPath, PathComparison))
             {
                 return Results.BadRequest(new { error = "every output must differ from inputPath." });
             }

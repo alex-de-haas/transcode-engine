@@ -101,6 +101,17 @@ public sealed class ExtractJobPublishTests : IDisposable
     }
 
     [Fact]
+    public void TryPublishOutputs_RefusesListsThatDoNotLineUp()
+    {
+        var outputs = new[] { Path.Combine(_root, "a.mka"), Path.Combine(_root, "b.srt") };
+
+        var error = Assert.Throws<ArgumentException>(() => Engine().TryPublishOutputs(
+            Job(outputs), [Written(".a.part.mka")], outputs, new FfmpegTranscodeEngine.StderrTail()));
+
+        Assert.Contains("1 temp path(s) for 2 output(s)", error.Message);
+    }
+
+    [Fact]
     public async Task RemoveAsync_WithDeleteOutput_DeletesEveryOutput()
     {
         // An extraction's outputs are one job's result, not several — leaving the rest behind would strand

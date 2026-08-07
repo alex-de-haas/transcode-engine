@@ -342,6 +342,106 @@ public sealed class ExtractJobEndpointTests
     }
 
     [Fact]
+    public async Task Post_OutputThatOnlyDiffersFromTheInputByCase_IsRefusedOffLinux()
+    {
+        // On a case-insensitive volume these name one file, and publishing would move the extracted track
+        // over the film. Ordinal comparison is kept on Linux, where the spelling really is a different file.
+        var (response, _) = await PostAsync(new
+        {
+            inputMountLabel = "media",
+            inputPath = "in.mkv",
+            outputs = new[] { new { path = "IN.MKV", streamIndex = 1 } },
+        });
+
+        if (OperatingSystem.IsLinux())
+        {
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            return;
+        }
+
+        Assert.Contains("differ from inputPath", await ErrorOf(response));
+    }
+
+    [Fact]
+    public async Task Post_TwoOutputsDifferingOnlyByCase_AreRefusedOffLinux()
+    {
+        var (response, _) = await PostAsync(new
+        {
+            inputMountLabel = "media",
+            inputPath = "in.mkv",
+            outputs = new[]
+            {
+                new { path = "in.rus.mka", streamIndex = 1 },
+                new { path = "IN.RUS.MKA", streamIndex = 2 },
+            },
+        });
+
+        if (OperatingSystem.IsLinux())
+        {
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            return;
+        }
+
+        Assert.Contains("two outputs write to", await ErrorOf(response));
+    }
+
+    [Fact]
+    public async Task Post_NullOutputEntry_ReturnsBadRequest()
+    {
+        // A JSON array can hold a literal null whatever the element type says; reading through it would be a
+        // 500 for an ordinary malformed request.
+        var media = MediaWith("in.mkv");
+        var (client, app) = await HostAsync(Settings($"media={media}"), ITranscodeEngine.Imposter().Instance());
+        await using var _ = app;
+
+        var response = await client.PostAsync(
+            "/jobs",
+            new StringContent(
+                """{"inputMountLabel":"media","inputPath":"in.mkv","outputs":[null]}""",
+                System.Text.Encoding.UTF8,
+                "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("must be an object with a path", (await response.Content.ReadFromJsonAsync<ErrorBody>())!.Error);
+    }
+
+    [Fact]
+    public async Task Post_OutputMountLabel_IsTheDefaultForEveryOutput()
+    {
+        // It means the same thing here as on a composed job — where the results are written — so setting it
+        // and having every output land on the input's mount instead would ignore a field the caller set.
+        var media = MediaWith("in.mkv");
+        var elsewhere = Directory.CreateTempSubdirectory("te-extract-out").FullName;
+        TranscodeJobRequest? seen = null;
+        var imposter = ITranscodeEngine.Imposter();
+        imposter.CreateAsync(Arg<TranscodeJobRequest>.Any(), Arg<CancellationToken>.Any())
+            .Returns((TranscodeJobRequest request, CancellationToken _) =>
+            {
+                seen = request;
+                return Task.FromResult(Descriptor);
+            });
+        var (client, app) = await HostAsync(Settings($"media={media},archive={elsewhere}"), imposter.Instance());
+        await using var _ = app;
+
+        var response = await client.PostAsJsonAsync("/jobs", new
+        {
+            inputMountLabel = "media",
+            inputPath = "in.mkv",
+            outputMountLabel = "archive",
+            outputs = new object[]
+            {
+                new { path = "in.rus.mka", streamIndex = 1 },
+                // An entry naming its own mount still wins.
+                new { mountLabel = "media", path = "in.eng.srt", streamIndex = 3 },
+            },
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.StartsWith(elsewhere, seen!.Outputs![0].Path);
+        Assert.StartsWith(media, seen.Outputs[1].Path);
+    }
+
+    [Fact]
     public async Task Post_NegativeStreamIndex_ReturnsBadRequest()
     {
         var (response, _) = await PostAsync(new

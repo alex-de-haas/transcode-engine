@@ -70,7 +70,7 @@ list, stay bounded no matter how many jobs have run. Eviction runs both after ea
 finishes and on a ~60s background sweep, so even a job cancelled while still queued
 (which never runs through the worker) ages out when the engine is otherwise idle. A
 consumer that needs a permanent record persists the transition events itself (see
-[Consumer integration](../consumer-integration.md#driving-off-remote-events)).
+[Consumer integration](../consumer-integration/feature.md#driving-off-remote-events)).
 
 ## Running a job
 
@@ -160,7 +160,7 @@ silently doing nothing.
 
 `TranscodeJob.ApplyProgressLine` folds one `key=value` line of ffmpeg's `-progress`
 output into the live fields, and `ToSnapshot` computes the view (see the
-[Control API snapshot table](../control-api.md#the-per-job-snapshot) for field
+[Control API snapshot table](../control-api/feature.md#the-per-job-snapshot) for field
 semantics). The non-obvious parts:
 
 - **`out_time_us` / `out_time_ms`** are both microseconds in ffmpeg (`out_time_ms` is

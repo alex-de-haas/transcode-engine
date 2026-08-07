@@ -83,7 +83,7 @@ media root lives (`{HOSTY_APP_DATA_DIR}/media`) when no mount is injected. Trans
 The app publishes one endpoint, `control`, over HTTP. A consumer declares this app as
 a cross-app dependency and is handed the resolved base URL as an environment variable
 (`HOSTY_DEPENDENCY_TRANSCODE_ENGINE_URL`); it points its HTTP client there and never
-hard-codes an address. See [Consumer integration](consumer-integration.md) for the
+hard-codes an address. See [Consumer integration](consumer-integration/feature.md) for the
 full wiring, including the current non-public-endpoint caveat.
 
 Under the `local` runtime Core assigns a loopback port and injects it as

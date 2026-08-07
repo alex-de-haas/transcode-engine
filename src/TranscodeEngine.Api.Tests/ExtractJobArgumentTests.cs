@@ -166,6 +166,21 @@ public sealed class ExtractJobArgumentTests
     }
 
     [Fact]
+    public void BuildArguments_RefusesDestinationsThatDoNotLineUpWithTheOutputs()
+    {
+        // Reading past the end of a shorter list would silently write one output over another's destination,
+        // so the mismatch is named rather than discovered as an unexplained job failure.
+        var job = Extract(
+            new ExtractionOutput("/out/a.mka", 1),
+            new ExtractionOutput("/out/b.srt", 3));
+
+        var error = Assert.Throws<ArgumentException>(
+            () => Engine().BuildArguments(job, TranscodeHardware.None, ["/out/.a.part.mka"]));
+
+        Assert.Contains("1 destination(s) for 2 output(s)", error.Message);
+    }
+
+    [Fact]
     public void OutputPaths_ListsEveryFileAnExtractionProduces()
     {
         var request = new TranscodeJobRequest(

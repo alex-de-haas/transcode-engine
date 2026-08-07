@@ -418,6 +418,15 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         IReadOnlyList<string> outputPaths,
         StderrTail stderrTail)
     {
+        if (tempPaths.Count != outputPaths.Count)
+        {
+            // The caller builds both from one list, so this cannot happen from the worker — but the method is
+            // reachable on its own, and an index out of range here would surface as an unexplained job
+            // failure rather than as the programming error it is.
+            throw new ArgumentException(
+                $"A job has {tempPaths.Count} temp path(s) for {outputPaths.Count} output(s).", nameof(tempPaths));
+        }
+
         var published = new List<string>(outputPaths.Count);
         for (var index = 0; index < outputPaths.Count; index++)
         {
@@ -656,6 +665,16 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
     private static List<string> BuildExtractionArguments(TranscodeJobRequest request, IReadOnlyList<string>? destinations)
     {
         var outputs = request.Outputs ?? [];
+
+        // Destinations line up with the outputs one for one, or there are none and each output writes to its
+        // own final path (which is what the argument tests do). A shorter list is a caller error, and reading
+        // past its end would silently write one output over another's destination.
+        if (destinations is not null && destinations.Count != outputs.Count)
+        {
+            throw new ArgumentException(
+                $"An extraction has {destinations.Count} destination(s) for {outputs.Count} output(s).", nameof(destinations));
+        }
+
         var args = new List<string> { "-hide_banner", "-nostdin", "-y", "-i", request.InputPath, "-progress", "pipe:1", "-nostats" };
 
         for (var index = 0; index < outputs.Count; index++)
@@ -690,7 +709,7 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
                 args.Add($"title={title}");
             }
 
-            args.Add(destinations is { Count: > 0 } ? destinations[index] : output.Path);
+            args.Add(destinations is not null ? destinations[index] : output.Path);
         }
 
         return args;
