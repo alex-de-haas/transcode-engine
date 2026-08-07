@@ -1,7 +1,7 @@
 # Compression Controls
 
 Created: 2026-08-06
-Updated: 2026-08-06
+Updated: 2026-08-07
 
 The two knobs that let a job make a file **smaller** rather than merely different: a
 quality level that every encoder family honours, and per-track audio re-encoding.
@@ -102,6 +102,57 @@ Two things the engine deliberately does **not** do:
 
 Audio targets are independent of what happens to the picture, so the cheapest useful
 conversion — shrink the audio, copy every frame of video — is one job.
+
+## Dolby Vision does not survive a re-encode
+
+A re-encoded job writes no Dolby Vision. What survives is the base layer — and what
+that base layer *is* depends on the source's profile and, within profile 8, on its
+base-layer compatibility id:
+
+| Profile | Base layer | A re-encode yields |
+| --- | --- | --- |
+| 7 (dual layer, from disc) | HEVC Main 10 PQ | HDR10 |
+| 8.1 (`bl_compat=1`) | HEVC Main 10 PQ | HDR10 |
+| 8.4 (`bl_compat=4`) | HLG | HLG |
+| 8.2 (`bl_compat=2`) | SDR, Rec. 709 | SDR |
+| 5 | IPT-PQ-c2 | wrong colours — unusable |
+
+Only the first two keep an HDR10 picture, and there the static metadata rides through:
+an AMF re-encode of a profile 7 source was checked and carries its mastering-display
+primaries and `MaxCLL 468 / MaxFALL 201` on the output. Profile 8.2 and 8.4 sources
+lose the dynamic layer *and* land on a different transfer function than an operator
+reading "Dolby Vision" would expect — not broken, but not HDR10 either.
+
+**Profile 5 is the one that breaks.** Its base layer is not viewable without the RPU:
+dropping the layer there does not degrade the picture; it wrecks the colours.
+
+The engine cannot tell any of these apart today. `ffprobe` reports both `dv_profile`
+and `dv_bl_signal_compatibility_id` in the stream's `DOVI configuration record`, but
+the probe collapses them into a single `DolbyVision` value. Until it carries them, a
+consumer that cannot establish its source's profile by other means should copy the
+video rather than encode it.
+
+This is a settled boundary rather than pending work, and two measurements settle it.
+
+**Preserving the layer would cost the pipeline and buy no bytes.** No hardware encoder
+can emit an RPU, so a Dolby Vision job is x265-only — and per the table above x265 and
+AMF are equivalent in quality per byte. The same file size would take 30–70× longer
+(a 107-minute feature: ~28 minutes on AMF against a day or more on x265), and the only
+thing bought is the dynamic metadata. It would also cost the engine's shape: a job is
+one ffmpeg process whose `-progress` stream drives both the snapshot and the
+five-minute no-progress watchdog, while Dolby Vision needs three stages (extract the
+RPU, encode, mux with `mkvmerge` so the container carries the DV signalling), two of
+which emit no progress at all while moving tens of gigabytes.
+
+**Discarding the enhancement layer is not worth a feature either.** A profile 7 source
+carries a second layer that `dovi_tool` can drop losslessly, converting to profile 8.1
+without re-encoding a frame — which sounded like the cheap win. Measured on a 300 s
+sample of the same remux: base layer 1732.1 MB, enhancement layer 75.2 MB. That is
+**4.2% of the video stream and 1.6% of the file** — a minimal enhancement layer, where
+a full one would be 10–25%. Extrapolated over the feature, ~2.3 GB out of 141.7 GB.
+
+What actually shrinks such a file is its audio: in that same 141.7 GB remux, 87.5 GB
+is audio and 54.1 GB is video. See [Per-track audio re-encoding](#per-track-audio-re-encoding).
 
 ## Testing Expectations
 
