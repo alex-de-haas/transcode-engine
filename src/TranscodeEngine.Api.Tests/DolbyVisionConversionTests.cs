@@ -219,10 +219,16 @@ public sealed class DolbyVisionConversionTests
         Assert.Equal(1, FfmpegTranscodeEngine.ParseVideoTrackId(identify));
 
     [Fact]
-    public void Identify_AsksForJsonWithoutAByteOrderMark() =>
-        Assert.Equal(
-            ["--no-bom", "--identification-format", "json", "--identify", "/in/movie.mkv"],
-            FfmpegTranscodeEngine.BuildIdentifyArguments("/in/movie.mkv"));
+    public void Identify_PassesOnlyTheIdentifyOptionsAndTheFile()
+    {
+        // mkvmerge in identification mode takes the first argument that is not an identify option as the
+        // file and refuses a second — a real job failed with "The argument '<path>' is not allowed in
+        // identification mode" because --no-bom stood where the file name was expected.
+        var args = FfmpegTranscodeEngine.BuildIdentifyArguments("/in/movie.mkv");
+
+        Assert.Equal(["--identification-format", "json", "--identify", "/in/movie.mkv"], args);
+        Assert.DoesNotContain("--no-bom", args);
+    }
 
     // ---- what may be converted, and what counts as converted ----
 

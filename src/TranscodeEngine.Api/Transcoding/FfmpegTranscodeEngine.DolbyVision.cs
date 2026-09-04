@@ -207,10 +207,13 @@ public sealed partial class FfmpegTranscodeEngine
     /// here so every process this runner starts reads the same way.</summary>
     private static readonly Encoding ToolOutput = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 
-    /// <summary><c>mkvmerge --no-bom -J input</c>: the identification as JSON, without the byte-order mark
-    /// mkvmerge otherwise puts in front of redirected output on Windows.</summary>
+    /// <summary><c>mkvmerge --identification-format json --identify input</c>. Nothing else: in identification
+    /// mode mkvmerge takes the first argument that is not one of the identify options as the file name and
+    /// refuses a second, so a general option such as <c>--no-bom</c> here is read as the file and the real
+    /// path is "not allowed in identification mode". A byte-order mark, should one arrive, is the parser's to
+    /// skip.</summary>
     internal static List<string> BuildIdentifyArguments(string inputPath) =>
-        ["--no-bom", "--identification-format", "json", "--identify", inputPath];
+        ["--identification-format", "json", "--identify", inputPath];
 
     /// <summary>The id of the first video track in <c>mkvmerge --identify</c>'s JSON, which is what mkvextract
     /// addresses tracks by. ffprobe's stream index is not the same numbering — attachments are streams to
