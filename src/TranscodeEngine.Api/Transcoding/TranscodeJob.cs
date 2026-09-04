@@ -31,6 +31,12 @@ internal sealed class TranscodeJob
     private long _outputSize;
     private DateTimeOffset? _completedAt;
 
+    // Set by a runner that measures its own progress — a Dolby Vision conversion spans several tools, and
+    // only its first stage speaks ffmpeg's -progress dialect. While set it is the snapshot's percentage,
+    // replacing the out_time / duration derivation, and the ETA is withheld: a ratio across tools that read
+    // and write at different speeds would be a number nothing could stand behind.
+    private double? _stagedPercent;
+
     // Read without the lock: it is written once, by the worker, before ffmpeg starts, and only read after.
     // Keeping it out of the lock is what lets the measurement below happen outside it.
     private volatile IReadOnlyList<string>? _sizeProbePaths;
@@ -39,14 +45,21 @@ internal sealed class TranscodeJob
         string jobId,
         TranscodeJobRequest request,
         double? durationSeconds,
-        string? sourcePixelFormat = null)
+        string? sourcePixelFormat = null,
+        FfmpegTranscodeEngine.SourceProbe source = default)
     {
         JobId = jobId;
         Request = request;
         _durationSeconds = durationSeconds;
         SourcePixelFormat = sourcePixelFormat;
+        Source = source;
         OutputPaths = request.OutputPaths;
     }
+
+    /// <summary>Everything the create-time ffprobe learned about the input. A Dolby Vision conversion reads
+    /// the video's frame rate, language and title from it when it rebuilds the track from an elementary
+    /// stream; every other job reads only <see cref="SourcePixelFormat"/>.</summary>
+    public FfmpegTranscodeEngine.SourceProbe Source { get; }
 
     public string JobId { get; }
 
@@ -107,6 +120,43 @@ internal sealed class TranscodeJob
     /// cancel/shutdown kill never touches a disposed <see cref="Process"/>.</summary>
     public void DetachProcess() => Process = null;
 
+    /// <summary>
+    /// Records a percentage measured by the runner itself, for a job whose progress ffmpeg's stream cannot
+    /// describe. Once called, the snapshot reports this figure until the job completes.
+    /// </summary>
+    public void ReportProgress(double percent)
+    {
+        lock (_gate)
+        {
+            _stagedPercent = Math.Clamp(Math.Round(percent, 2), 0, 100);
+        }
+    }
+
+    /// <summary>Records the output's size as the runner measured it, for a job whose ffmpeg stage writes an
+    /// intermediate rather than the output and whose later stages are not ffmpeg at all.</summary>
+    public void ReportOutputSize(long bytes)
+    {
+        lock (_gate)
+        {
+            _outputSize = Math.Max(0, bytes);
+        }
+    }
+
+    /// <summary>The percentage of the input ffmpeg has written so far, from its <c>out_time</c> against the
+    /// probed duration; null when the duration is unknown. What a staged runner maps into its own window.</summary>
+    public double? FfmpegPercent
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _durationSeconds is { } duration && duration > 0
+                    ? Math.Clamp(_outTimeSeconds / duration * 100, 0, 100)
+                    : null;
+            }
+        }
+    }
+
     public void Complete(JobState state)
     {
         lock (_gate)
@@ -118,6 +168,11 @@ internal sealed class TranscodeJob
                 if (_durationSeconds is { } duration && duration > 0)
                 {
                     _outTimeSeconds = duration;
+                }
+
+                if (_stagedPercent is not null)
+                {
+                    _stagedPercent = 100;
                 }
 
                 _speed = 0;
@@ -225,14 +280,14 @@ internal sealed class TranscodeJob
     {
         lock (_gate)
         {
-            var percent = _durationSeconds is { } duration && duration > 0
+            var percent = _stagedPercent ?? (_durationSeconds is { } duration && duration > 0
                 ? Math.Clamp(Math.Round(_outTimeSeconds / duration * 100, 2), 0, 100)
-                : (_state is JobState.Completed ? 100 : 0);
+                : (_state is JobState.Completed ? 100 : 0));
 
             var complete = _state is JobState.Completed;
 
             double? eta = null;
-            if (_state is JobState.Running && _durationSeconds is { } total && total > 0 && _speed > 0)
+            if (_stagedPercent is null && _state is JobState.Running && _durationSeconds is { } total && total > 0 && _speed > 0)
             {
                 eta = Math.Max(0, Math.Round((total - _outTimeSeconds) / _speed, 1));
             }

@@ -11,13 +11,16 @@ namespace TranscodeEngine.Api.Transcoding;
 /// <param name="AmfAvailable">Whether the AMD AMF runtime is reachable — true only when the engine runs
 /// natively on Windows and the AMD driver's <c>amfrt64.dll</c> is present (never inside the Linux docker
 /// container).</param>
+/// <param name="Tools">The external tools a Dolby Vision profile 7 → 8.1 conversion needs and their versions
+/// (<see cref="ToolingStatus"/>); null only where a host composes the status without asking.</param>
 public sealed record HardwareStatus(
     bool VaapiAvailable,
     string? VaapiDevice,
     IReadOnlyList<string> RenderDevices,
     bool VideoToolboxAvailable,
     bool AmfAvailable,
-    DateTimeOffset CheckedAt);
+    DateTimeOffset CheckedAt,
+    ToolingStatus? Tools = null);
 
 /// <summary>Inspects the passed-through DRI devices to report VAAPI availability without spawning a process.</summary>
 public static class HardwareProbe

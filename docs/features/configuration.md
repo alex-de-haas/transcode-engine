@@ -2,7 +2,7 @@
 
 Status: Implemented
 Created: 2026-07-03
-Updated: 2026-07-03
+Updated: 2026-09-04
 
 ## Description
 
@@ -48,6 +48,9 @@ directly (e.g. for a local run) when needed:
 | --- | --- | --- |
 | `FFMPEG_PATH` | `ffmpeg` | Path to the `ffmpeg` binary; a bare name resolves on `PATH`. Useful to point the native `local` runtime at a specific host build. |
 | `FFPROBE_PATH` | `ffprobe` | Path to the `ffprobe` binary (used to probe input duration). |
+| `DOVI_TOOL_PATH` | `dovi_tool` | Path to `dovi_tool`, which rewrites Dolby Vision RPU metadata for `dolbyVision: toProfile81`. With the two below, its presence is what `GET /hardware` reports under `tools`; a host missing any of the three refuses that job option. |
+| `MKVMERGE_PATH` | `mkvmerge` | Path to MKVToolNix's `mkvmerge` (assembles a converted output and identifies the input's tracks). |
+| `MKVEXTRACT_PATH` | `mkvextract` | Path to MKVToolNix's `mkvextract` (writes the dual-layer video as an elementary stream). |
 
 ## Precedence notes
 

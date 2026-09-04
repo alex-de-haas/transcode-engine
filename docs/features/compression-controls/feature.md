@@ -1,7 +1,7 @@
 # Compression Controls
 
 Created: 2026-08-06
-Updated: 2026-08-07
+Updated: 2026-09-04
 
 The two knobs that let a job make a file **smaller** rather than merely different: a
 quality level that every encoder family honours, and per-track audio re-encoding.
@@ -126,13 +126,17 @@ reading "Dolby Vision" would expect — not broken, but not HDR10 either.
 **Profile 5 is the one that breaks.** Its base layer is not viewable without the RPU:
 dropping the layer there does not degrade the picture; it wrecks the colours.
 
-The engine cannot tell any of these apart today. `ffprobe` reports both `dv_profile`
-and `dv_bl_signal_compatibility_id` in the stream's `DOVI configuration record`, but
-the probe collapses them into a single `DolbyVision` value. Until it carries them, a
-consumer that cannot establish its source's profile by other means should copy the
-video rather than encode it.
+The probe tells them apart: a video stream's `dolbyVision` in `POST /probe` carries
+`profile` and `blSignalCompatibilityId` from the stream's `DOVI configuration record`
+([Probe API](../probe-api/feature.md#dolby-vision)), so a consumer can say which row a
+source is on before it re-encodes. And for the first row there is a third answer beside
+"drop the layer" and "spend a day of CPU": a video-copy job with `dolbyVision:
+toProfile81` rewrites a profile 7 source to profile 8.1 — the form Apple hardware plays
+as Dolby Vision — for the cost of a copy, dropping only the enhancement layer measured
+below ([Dolby Vision conversion](../dolby-vision-conversion/feature.md)).
 
-This is a settled boundary rather than pending work, and two measurements settle it.
+Preserving the layer through a re-encode stays a settled boundary, and two measurements
+settle it.
 
 **Preserving the layer would cost the pipeline and buy no bytes.** No hardware encoder
 can emit an RPU, so a Dolby Vision job is x265-only — and per the table above x265 and

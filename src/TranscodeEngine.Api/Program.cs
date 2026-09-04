@@ -29,7 +29,8 @@ if (!string.Equals(builder.Configuration["DOTNET_RUNNING_IN_CONTAINER"], "true",
 // (docker runtime + observability enabled); a no-op otherwise. See Telemetry/HostyTelemetry.cs.
 builder.AddHostyTelemetry();
 
-builder.Services.AddSingleton(TranscodeEngineSettings.FromConfiguration(builder.Configuration, builder.Environment.ContentRootPath));
+var settings = TranscodeEngineSettings.FromConfiguration(builder.Configuration, builder.Environment.ContentRootPath);
+builder.Services.AddSingleton(settings);
 
 // The engine is a single instance that is also the hosted service (runs the job workers) and the
 // ITranscodeEngine the API + broadcaster resolve.
@@ -48,8 +49,13 @@ var app = builder.Build();
 // Liveness — also used by a consumer to gate readiness.
 app.MapGet("/healthz", () => Results.Ok(new { status = "ok" }));
 
-// Detected hardware accelerators (a consumer can surface what the host actually offers).
-app.MapGet("/hardware", (TranscodeEngineSettings settings) => Results.Ok(HardwareProbe.Detect(settings)));
+// Detected hardware accelerators, plus the external tools a Dolby Vision conversion runs on (a consumer can
+// surface what the host actually offers, and gate the conversion on the tools). The hardware part stays a
+// cheap filesystem look on every call; the tool versions come from spawning each tool once, so they are read
+// lazily and kept — they are a property of the image, not of the request.
+var tooling = new Lazy<ToolingStatus>(() => DolbyVisionTooling.Describe(settings), LazyThreadSafetyMode.ExecutionAndPublication);
+app.MapGet("/hardware", (TranscodeEngineSettings current) =>
+    Results.Ok(HardwareProbe.Detect(current) with { Tools = tooling.Value }));
 
 app.MapTranscodeEndpoints();
 

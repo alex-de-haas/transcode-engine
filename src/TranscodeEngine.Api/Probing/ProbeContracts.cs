@@ -45,6 +45,28 @@ public enum HdrFormat
 }
 
 /// <summary>
+/// The Dolby Vision configuration record a video stream carries — the same 24 bytes the container holds
+/// in an MP4 <c>dvcC</c>/<c>dvvC</c> box or a Matroska <c>BlockAdditionMapping</c>, read through ffprobe's
+/// <c>side_data_list</c>. It is what tells profile 7 (dual layer, from disc; Apple hardware plays its HDR10
+/// base layer) from profile 8.1 (single layer; plays as Dolby Vision), which <see cref="HdrFormat.DolbyVision"/>
+/// alone cannot.
+/// </summary>
+/// <param name="Profile">The Dolby Vision profile: 5, 7 or 8 in practice.</param>
+/// <param name="Level">The Dolby Vision level (6 is 4K at 24 fps and the common value for a film).</param>
+/// <param name="BlSignalCompatibilityId">What the base layer is on its own: 1 is HDR10 (profile 8.1), 2 SDR
+/// (8.2), 4 HLG (8.4), 6 the HDR10 a UHD Blu-ray carries under profile 7, 0 none (profile 5).</param>
+/// <param name="RpuPresent">Whether RPU metadata is present.</param>
+/// <param name="ElPresent">Whether an enhancement layer is present — the mark of a dual-layer profile 7.</param>
+/// <param name="BlPresent">Whether a base layer is present.</param>
+public sealed record DolbyVisionInfo(
+    int Profile,
+    int Level,
+    int BlSignalCompatibilityId,
+    bool RpuPresent,
+    bool ElPresent,
+    bool BlPresent);
+
+/// <summary>
 /// One stream of a probed file. <see cref="Index"/> is ffprobe's absolute stream index, including the
 /// entry it synthesizes for embedded cover art — job creation addresses streams by that index, so a
 /// consumer mixing this with its own parser must see the same numbering.
@@ -68,7 +90,10 @@ public sealed record ProbedStreamInfo(
     int? BitDepth,
     HdrFormat Hdr,
     int? Channels,
-    int? SampleRate);
+    int? SampleRate,
+    /// <summary>The Dolby Vision configuration record, when the stream carries one; null otherwise, and
+    /// always null for anything but video.</summary>
+    DolbyVisionInfo? DolbyVision = null);
 
 /// <summary>A probed file: its container, overall figures, and every stream in ffprobe's order.</summary>
 public sealed record ProbeResponse(

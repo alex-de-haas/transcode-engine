@@ -12,7 +12,7 @@ namespace TranscodeEngine.Api.Transcoding;
 /// that drain a job queue, spawn ffmpeg per job (VAAPI or software), parse its <c>-progress</c> stream into
 /// live snapshots, and raise the start/complete/fail transitions a consumer cares about.
 /// </summary>
-public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, IDisposable
+public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, IDisposable
 {
     // A job is killed if ffmpeg emits no -progress line for this long: a hung VAAPI init, a stalled NFS
     // read, or a special file (FIFO) that never returns would otherwise block its worker — and, at the
@@ -128,8 +128,17 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
             throw new ArgumentException(error);
         }
 
+        // A Dolby Vision conversion only means anything on a dual-layer profile 7 source, and that is a fact
+        // about the input the endpoint cannot see. Refused here for the reason an extraction's stream check
+        // is: the input is already probed, and a job that would run three tools over the whole file before
+        // discovering the metadata was never there is an expensive way to learn it.
+        if (request.ConvertsDolbyVision && DolbyVisionConversionError(source) is { } dolbyVisionError)
+        {
+            throw new ArgumentException(dolbyVisionError);
+        }
+
         var jobId = Guid.NewGuid().ToString("n");
-        var job = new TranscodeJob(jobId, request, duration, source.VideoPixelFormat);
+        var job = new TranscodeJob(jobId, request, duration, source.VideoPixelFormat, source);
         _jobs[jobId] = job;
 
         if (!_queue.Writer.TryWrite(jobId))
@@ -248,6 +257,14 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
 
         job.Start(hardware);
         JobStarted?.Invoke(this, job.JobId);
+
+        // A Dolby Vision conversion is a copy job that runs as several tool stages rather than one ffmpeg
+        // invocation; it shares the state transitions above and takes its own path from here.
+        if (job.Request.ConvertsDolbyVision)
+        {
+            await RunDolbyVisionJobAsync(job, hardware, cancellationToken);
+            return;
+        }
 
         // Make the actually-selected encoder visible: a *_vaapi / *_videotoolbox encoder that then completes
         // means hardware encoding really happened (ffmpeg errors out if it can't init the device — it never
@@ -593,8 +610,15 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
 
         // Map the primary video stream (0:v:0, never a bare 0:v — that would also grab attached cover-art
         // "video" streams the hardware encoders reject), then the selected audio and subtitle streams.
-        args.Add("-map");
-        args.Add("0:v:0");
+        //
+        // A Dolby Vision conversion is the exception: its ffmpeg stage composes everything *but* the picture,
+        // which the tool stages rewrite and mkvmerge adds back (see FfmpegTranscodeEngine.DolbyVision.cs), so
+        // mapping the video here would only copy fifty gigabytes into a file about to be discarded.
+        if (!request.ConvertsDolbyVision)
+        {
+            args.Add("-map");
+            args.Add("0:v:0");
+        }
 
         // Subtitles (and the attachment fonts that ASS subs render with) only when the output is Matroska:
         // mkv carries any subtitle/attachment codec, so a stream copy always works. Other containers (e.g.
@@ -616,7 +640,12 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
         }
 
         // Video: copy (remux, lossless, HDR-safe) or re-encode with the selected encoder + optional downscale.
-        if (request.CopyVideo)
+        // A Dolby Vision conversion mapped no video above, so it names no video codec either.
+        if (request.ConvertsDolbyVision)
+        {
+            // Nothing to say: the picture is not in this output.
+        }
+        else if (request.CopyVideo)
         {
             args.Add("-c:v");
             args.Add("copy");
@@ -1282,8 +1311,30 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
     /// <summary>What the create-time ffprobe learns about the input: the duration progress percentages are
     /// computed from, and the primary video stream's pixel format, which decides the bit depth the VAAPI
     /// chain uploads at. Either field is null when ffprobe could not report it (an audio-only merge source
-    /// has no <c>pix_fmt</c>); both callers degrade rather than fail.</summary>
-    internal readonly record struct SourceProbe(double? DurationSeconds, string? VideoPixelFormat);
+    /// has no <c>pix_fmt</c>); both callers degrade rather than fail.
+    /// <para>
+    /// The rest serves a Dolby Vision conversion: the video's frame rate as ffprobe's rational
+    /// (<c>24000/1001</c>), its language and title tags, and the Dolby Vision configuration record — the same
+    /// 24 bytes the container holds, which is what tells a dual-layer profile 7 from a single-layer 8.1.
+    /// </para></summary>
+    internal readonly record struct SourceProbe(
+        double? DurationSeconds,
+        string? VideoPixelFormat,
+        string? VideoFrameRate = null,
+        string? VideoLanguage = null,
+        string? VideoTitle = null,
+        DolbyVisionRecord? DolbyVision = null);
+
+    /// <summary>A stream's Dolby Vision configuration record as ffprobe reports it: profile, level, the
+    /// layer flags and the base-layer compatibility id (1 is the HDR10 of profile 8.1; 6 the HDR10 a UHD
+    /// Blu-ray carries under profile 7).</summary>
+    internal readonly record struct DolbyVisionRecord(
+        int Profile,
+        int Level,
+        int CompatibilityId,
+        bool RpuPresent,
+        bool ElPresent,
+        bool BlPresent);
 
     private async Task<SourceProbe> ProbeSourceAsync(string inputPath, CancellationToken cancellationToken)
     {
@@ -1304,12 +1355,16 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
             foreach (var arg in new[]
             {
                 "-v", "quiet",
-                // Only the primary video stream's pix_fmt matters (BuildArguments maps 0:v:0); -select_streams
-                // does not touch the format section, so the duration still comes back.
+                // Only the primary video stream matters (BuildArguments maps 0:v:0); -select_streams does not
+                // touch the format section, so the duration still comes back. Beside pix_fmt, the frame rate,
+                // the language/title tags and the Dolby Vision record serve a conversion, which rebuilds the
+                // video track from an elementary stream that carries none of them.
                 "-select_streams", "v:0",
-                "-show_entries", "format=duration:stream=pix_fmt",
-                // Keys are kept (no nokey=1): the two entries live in different sections, so the output is
-                // parsed by name rather than by line order.
+                "-show_entries",
+                "format=duration:stream=pix_fmt,r_frame_rate:stream_tags=language,title:" +
+                "stream_side_data=dv_profile,dv_level,rpu_present_flag,el_present_flag,bl_present_flag,dv_bl_signal_compatibility_id",
+                // Keys are kept (no nokey=1): the entries live in different sections, so the output is parsed
+                // by name rather than by line order. Tags arrive as TAG:language=...; side data keys as they are.
                 "-of", "default=noprint_wrappers=1",
                 inputPath,
             })
@@ -1351,11 +1406,22 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
     }
 
     /// <summary>Reads ffprobe's <c>key=value</c> lines. A key ffprobe did not emit stays null — an
-    /// audio-only input reports no <c>pix_fmt</c>, and a stream-less file reports no <c>duration</c>.</summary>
+    /// audio-only input reports no <c>pix_fmt</c>, and a stream-less file reports no <c>duration</c>. The
+    /// Dolby Vision record exists only when a <c>dv_profile</c> was printed; its other fields default to
+    /// zero and false, which is what an absent flag means.</summary>
     internal static SourceProbe ParseSourceProbe(string stdout)
     {
         double? duration = null;
         string? pixelFormat = null;
+        string? frameRate = null;
+        string? language = null;
+        string? title = null;
+        int? dvProfile = null;
+        var dvLevel = 0;
+        var dvCompatibility = 0;
+        var rpu = false;
+        var el = false;
+        var bl = false;
         foreach (var line in stdout.Split('\n'))
         {
             var separator = line.IndexOf('=');
@@ -1374,10 +1440,44 @@ public sealed class FfmpegTranscodeEngine : ITranscodeEngine, IHostedService, ID
                 case "pix_fmt" when value.Length > 0 && value != "unknown":
                     pixelFormat = value;
                     break;
+                // 0/0 is ffprobe's "unknown" rational, and no use as a default duration.
+                case "r_frame_rate" when value.Length > 0 && value != "0/0":
+                    frameRate = value;
+                    break;
+                case "TAG:language" when value.Length > 0 && !value.Equals("und", StringComparison.OrdinalIgnoreCase):
+                    language = value;
+                    break;
+                case "TAG:title" when value.Length > 0:
+                    title = value;
+                    break;
+                case "dv_profile" when int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var profile):
+                    dvProfile = profile;
+                    break;
+                case "dv_level" when int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var level):
+                    dvLevel = level;
+                    break;
+                case "dv_bl_signal_compatibility_id" when int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var compatibility):
+                    dvCompatibility = compatibility;
+                    break;
+                case "rpu_present_flag":
+                    rpu = value == "1";
+                    break;
+                case "el_present_flag":
+                    el = value == "1";
+                    break;
+                case "bl_present_flag":
+                    bl = value == "1";
+                    break;
             }
         }
 
-        return new SourceProbe(duration, pixelFormat);
+        return new SourceProbe(
+            duration,
+            pixelFormat,
+            frameRate,
+            language,
+            title,
+            dvProfile is { } dv ? new DolbyVisionRecord(dv, dvLevel, dvCompatibility, rpu, el, bl) : null);
     }
 
     /// <summary>

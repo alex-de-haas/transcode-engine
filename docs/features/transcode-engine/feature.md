@@ -1,7 +1,7 @@
 # Transcode Engine
 
 Created: 2026-07-03
-Updated: 2026-08-06
+Updated: 2026-09-04
 
 ## Description
 
@@ -105,6 +105,12 @@ consumer that needs a permanent record persists the transition events itself (se
    cancelled, or interrupted job **never touches a pre-existing file at the output
    path** — the destination is replaced only by a rename on success.
 
+A job with `dolbyVision: toProfile81` leaves this path after step 2: it is a copy job
+that runs as four tool stages — ffmpeg for everything but the picture, then
+`mkvextract`, `dovi_tool` and `mkvmerge` for the picture — each one process under the
+same cancel and no-progress watchdog, with the same temp-and-rename publish at the end.
+See [Dolby Vision conversion](../dolby-vision-conversion/feature.md#how-it-runs).
+
 `Dispose` is made idempotent with an `Interlocked.Exchange` on the CTS, because the
 one instance is registered three ways and the DI container can dispose it more than
 once.
@@ -175,6 +181,10 @@ semantics). The non-obvious parts:
   so a finished job reads a clean 100% at 0 fps rather than the last mid-encode tick.
 - **`effectiveHardware`** reflects the encoder family resolved at `Start`; a
   still-queued job reports `null`.
+- **A runner can report its own percentage** (`TranscodeJob.ReportProgress`), which
+  then replaces the `out_time` derivation and withholds the ETA until the job
+  completes. The Dolby Vision conversion uses it: only its first stage speaks
+  `-progress`, and the others are measured by the growth of the file they write.
 
 ## Testing Expectations
 
