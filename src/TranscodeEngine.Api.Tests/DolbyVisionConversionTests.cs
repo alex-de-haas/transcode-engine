@@ -236,7 +236,7 @@ public sealed class DolbyVisionConversionTests
     // described, never thrown on: TryGetProperty on a non-object is an InvalidOperationException, and a
     // diagnostic that crashes has explained nothing.
     [InlineData("[]", "(no tracks array)")]
-    [InlineData(""""ok"""", "(no tracks array)")]
+    [InlineData("\"ok\"", "(no tracks array)")]
     [InlineData("""{"tracks":[1,{"id":0,"type":"video"},"x"]}""", "?:?, 0:video, ?:?")]
     [InlineData("not json", "(unreadable: ")]
     public void DescribeTracks_SaysWhatTheDocumentHeld(string identify, string expected) =>
@@ -244,7 +244,7 @@ public sealed class DolbyVisionConversionTests
 
     [Theory]
     [InlineData("[]")]
-    [InlineData(""""ok"""")]
+    [InlineData("\"ok\"")]
     [InlineData("""{"tracks":[1,"x"]}""")]
     public void ParseVideoTrackId_TreatsValidJsonOfTheWrongShapeAsNoTrack(string identify) =>
         Assert.Null(FfmpegTranscodeEngine.ParseVideoTrackId(identify));
