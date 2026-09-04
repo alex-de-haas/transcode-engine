@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 
 namespace TranscodeEngine.Api.Transcoding;
@@ -200,15 +201,29 @@ public sealed partial class FfmpegTranscodeEngine
         return args;
     }
 
+    /// <summary>The tools' output is UTF-8 whatever the host's console code page is — mkvmerge writes it so on
+    /// every platform — and .NET's default for a redirected pipe on Windows is the console's own code page,
+    /// under which a UTF-8 document is mojibake and its byte-order mark three stray characters. Said once
+    /// here so every process this runner starts reads the same way.</summary>
+    private static readonly Encoding ToolOutput = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
+    /// <summary><c>mkvmerge --no-bom -J input</c>: the identification as JSON, without the byte-order mark
+    /// mkvmerge otherwise puts in front of redirected output on Windows.</summary>
+    internal static List<string> BuildIdentifyArguments(string inputPath) =>
+        ["--no-bom", "--identification-format", "json", "--identify", inputPath];
+
     /// <summary>The id of the first video track in <c>mkvmerge --identify</c>'s JSON, which is what mkvextract
     /// addresses tracks by. ffprobe's stream index is not the same numbering — attachments are streams to
     /// ffprobe and not tracks to mkvmerge — so it is asked rather than assumed. Null when there is none or
-    /// the document cannot be read.</summary>
+    /// the document cannot be read. A byte-order mark or whitespace ahead of the document is skipped rather
+    /// than counted as a document that cannot be read.</summary>
     internal static int? ParseVideoTrackId(string identifyJson)
     {
         try
         {
-            using var document = JsonDocument.Parse(identifyJson);
+            // Whitespace, then a byte-order mark, then whitespace again: a tool that prints a blank line before
+            // the mark is as plausible as one that prints the mark first, and the mark is not whitespace to Trim.
+            using var document = JsonDocument.Parse(identifyJson.AsMemory().Trim().TrimStart('\uFEFF').Trim());
             if (!document.RootElement.TryGetProperty("tracks", out var tracks) || tracks.ValueKind != JsonValueKind.Array)
             {
                 return null;
@@ -427,6 +442,8 @@ public sealed partial class FfmpegTranscodeEngine
 
         psi.RedirectStandardOutput = true;
         psi.RedirectStandardError = true;
+        psi.StandardOutputEncoding = ToolOutput;
+        psi.StandardErrorEncoding = ToolOutput;
         psi.UseShellExecute = false;
 
         using var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
@@ -590,6 +607,11 @@ public sealed partial class FfmpegTranscodeEngine
         _logger.LogWarning("Job {JobId} failed: {Reason} {Tail}", job.JobId, reason, stderrTail.Text);
     }
 
+    /// <summary>The first few hundred characters of a tool's output, enough to see what went wrong without
+    /// putting a whole identification into one log line.</summary>
+    private static string Head(string? text) =>
+        string.IsNullOrWhiteSpace(text) ? "(empty)" : text.Length <= 400 ? text.Trim() : text[..400].Trim() + "…";
+
     /// <summary>Asks <c>mkvmerge --identify</c> for the input's video track id. Bounded and best-effort like
     /// every probe here: null when it cannot answer, which fails the job with a reason rather than guessing
     /// a track.</summary>
@@ -603,9 +625,11 @@ public sealed partial class FfmpegTranscodeEngine
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                StandardOutputEncoding = ToolOutput,
+                StandardErrorEncoding = ToolOutput,
                 UseShellExecute = false,
             };
-            foreach (var arg in new[] { "--identification-format", "json", "--identify", inputPath })
+            foreach (var arg in BuildIdentifyArguments(inputPath))
             {
                 psi.ArgumentList.Add(arg);
             }
@@ -622,8 +646,18 @@ public sealed partial class FfmpegTranscodeEngine
                 var stderr = process.StandardError.ReadToEndAsync(timeoutCts.Token);
                 var stdout = await process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
                 await process.WaitForExitAsync(timeoutCts.Token);
-                await stderr;
-                return ParseVideoTrackId(stdout);
+                var errors = await stderr;
+                var trackId = ParseVideoTrackId(stdout);
+                if (trackId is null)
+                {
+                    // The one answer that used to be silent: what mkvmerge actually said, so the next failure
+                    // of this kind is diagnosable from the log rather than reproduced by hand on the host.
+                    _logger.LogWarning(
+                        "mkvmerge --identify found no video track in {Input} (exit {Code}). stdout: {Stdout} stderr: {Stderr}",
+                        inputPath, process.ExitCode, Head(stdout), Head(errors));
+                }
+
+                return trackId;
             }
             catch (OperationCanceledException)
             {

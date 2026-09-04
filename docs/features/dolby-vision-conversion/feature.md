@@ -65,8 +65,13 @@ four stages, each one process under the job's cancel and no-progress watchdog:
 2. **The layers.** `mkvextract input.mkv tracks ID:layers.hevc` writes the video track as an
    Annex B elementary stream with base and enhancement layer interleaved, which is how
    mkvextract writes a track carrying `BlockAdditions`. The track id comes from
-   `mkvmerge --identify`, not from ffprobe's stream index: attachments are streams to
-   ffprobe and not tracks to mkvmerge, so the two numberings can differ.
+   `mkvmerge --no-bom -J`, not from ffprobe's stream index: attachments are streams to
+   ffprobe and not tracks to mkvmerge, so the two numberings can differ. Every tool's
+   output is read as UTF-8 whatever the host's console code page — on Windows .NET's
+   default is that code page, under which mkvmerge's JSON was mojibake and its byte-order
+   mark three stray characters, and a real job failed there — and a byte-order mark ahead
+   of the document is skipped regardless. When no video track can be read, the log carries
+   what mkvmerge printed, so the next such failure is diagnosable without reproducing it.
 3. **The rewrite.** `dovi_tool -m 2 convert --discard layers.hevc -o dv81.hevc` rewrites
    every RPU to profile 8.1 with base-layer compatibility id 1 and drops the enhancement
    layer; the base layer is copied. The source layers are deleted as soon as this stage
@@ -127,7 +132,9 @@ Backend tests use xUnit and Imposter; no process ever starts.
   merge, and for an unreadable stream list; the argument builders for `mkvextract`,
   `dovi_tool` and `mkvmerge` (default duration, language and title present and omitted,
   the video first, and the video alone without a composition); the first video track taken
-  from `mkvmerge --identify` and null without one or without a document; the create-time
+  from `mkvmerge --identify`, null without one or without a document, and found behind a
+  byte-order mark or leading whitespace; the identify arguments asking for JSON without a
+  byte-order mark; the create-time
   refusal of profile 8, profile 5, a recordless stream and a video-less input by name,
   profile 7 accepted, and an unreadable input let through; the output check accepting only profile 8 with
   compatibility id 1; the free-space rule needing twice the input and only when both

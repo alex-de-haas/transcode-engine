@@ -97,6 +97,10 @@ public static partial class DolbyVisionTooling
             {
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                // The tools write UTF-8 to a pipe on every platform; the default on Windows is the console's
+                // code page, which would turn a banner's non-ASCII characters into mojibake.
+                StandardOutputEncoding = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+                StandardErrorEncoding = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
                 UseShellExecute = false,
             };
             psi.ArgumentList.Add("--version");
