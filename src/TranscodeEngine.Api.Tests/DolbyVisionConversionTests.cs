@@ -63,6 +63,9 @@ public sealed class DolbyVisionConversionTests
         var maps = MapTargets(args).ToList();
         Assert.DoesNotContain("0:v:0", maps);
         Assert.DoesNotContain("-c:v", args);
+        // Should the maps select nothing, ffmpeg would pick streams on its own and re-encode the picture into
+        // the discarded file; -vn rules the picture out whatever happens.
+        Assert.Contains("-vn", args);
         Assert.Contains("0:a?", maps);
         Assert.Contains("0:s?", maps);
         Assert.Contains("0:t?", maps);
@@ -88,6 +91,38 @@ public sealed class DolbyVisionConversionTests
 
         Assert.Contains("0:v:0", MapTargets(args));
         Assert.Equal("copy", args[args.IndexOf("-c:v") + 1]);
+    }
+
+    private static FfmpegTranscodeEngine.ProbedStream Stream(int index, string kind) => new(index, kind, "x");
+
+    [Fact]
+    public void TracksStage_IsSkippedWhenNothingIsSelected()
+    {
+        // Explicitly empty selections and no merge: ffmpeg would be given no -map and would select streams on
+        // its own, reintroducing the tracks the caller excluded. The stage is not run at all.
+        var streams = new[] { Stream(0, "video"), Stream(1, "audio"), Stream(2, "subtitle") };
+        Assert.False(FfmpegTranscodeEngine.TracksStageMapsAnything(Conversion(audio: [], subtitles: []), streams));
+    }
+
+    [Fact]
+    public void TracksStage_RunsWhenASelectionOrTheInputHasSomethingToCopy()
+    {
+        var withAudio = new[] { Stream(0, "video"), Stream(1, "audio") };
+        var videoOnly = new[] { Stream(0, "video") };
+        var withFonts = new[] { Stream(0, "video"), Stream(1, "attachment") };
+
+        // A null selection copies every stream of its kind, so it maps something exactly when the input has one.
+        Assert.True(FfmpegTranscodeEngine.TracksStageMapsAnything(Conversion(), withAudio));
+        Assert.False(FfmpegTranscodeEngine.TracksStageMapsAnything(Conversion(), videoOnly));
+        // Subtitles ride with attachments: a null subtitle selection maps the fonts even with no subtitle track.
+        Assert.True(FfmpegTranscodeEngine.TracksStageMapsAnything(Conversion(audio: []), withFonts));
+        // An explicit selection answers by its count, whatever the input holds.
+        Assert.True(FfmpegTranscodeEngine.TracksStageMapsAnything(Conversion(audio: [1], subtitles: []), videoOnly));
+        // A merge always brings at least one stream — the endpoint requires it.
+        var merge = Conversion(audio: [], subtitles: []) with { AdditionalInputs = [new AdditionalInput("/in/dub.mka", [0])] };
+        Assert.True(FfmpegTranscodeEngine.TracksStageMapsAnything(merge, videoOnly));
+        // An unknown stream list runs the stage: an empty run fails honestly, a skipped one loses tracks.
+        Assert.True(FfmpegTranscodeEngine.TracksStageMapsAnything(Conversion(), []));
     }
 
     [Fact]
@@ -140,6 +175,16 @@ public sealed class DolbyVisionConversionTests
             Probe(frameRate: null, language: null, title: null));
 
         Assert.Equal(["--output", "/out/.movie.part.mkv", "/out/.movie.dv81.hevc", "--no-video", "/out/.movie.tracks.mkv"], args);
+    }
+
+    [Fact]
+    public void Mkvmerge_WithoutAComposition_TakesTheVideoAlone()
+    {
+        var args = FfmpegTranscodeEngine.BuildMkvmergeArguments(
+            "/out/.movie.part.mkv", "/out/.movie.dv81.hevc", tracks: null, Probe(frameRate: null, language: null));
+
+        Assert.Equal(["--output", "/out/.movie.part.mkv", "/out/.movie.dv81.hevc"], args);
+        Assert.DoesNotContain("--no-video", args);
     }
 
     [Fact]

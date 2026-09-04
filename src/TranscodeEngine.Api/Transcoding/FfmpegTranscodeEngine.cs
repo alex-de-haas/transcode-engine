@@ -613,8 +613,16 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
         //
         // A Dolby Vision conversion is the exception: its ffmpeg stage composes everything *but* the picture,
         // which the tool stages rewrite and mkvmerge adds back (see FfmpegTranscodeEngine.DolbyVision.cs), so
-        // mapping the video here would only copy fifty gigabytes into a file about to be discarded.
-        if (!request.ConvertsDolbyVision)
+        // mapping the video here would only copy fifty gigabytes into a file about to be discarded. -vn says
+        // so explicitly: should the maps below select nothing, ffmpeg falls back to automatic stream
+        // selection, and without -vn that would *re-encode* the picture into the discarded file. The runner
+        // skips this stage altogether when nothing is selected (TracksStageMapsAnything); -vn is the guard
+        // for the case it cannot foresee.
+        if (request.ConvertsDolbyVision)
+        {
+            args.Add("-vn");
+        }
+        else
         {
             args.Add("-map");
             args.Add("0:v:0");

@@ -136,13 +136,40 @@ public sealed partial class FfmpegTranscodeEngine
         ["-m", "2", "convert", "--discard", sourceLayers, "-o", destination];
 
     /// <summary>
-    /// <c>mkvmerge</c> assembling the output: the converted elementary stream first, then every track of the
-    /// composition except a video (it has none, but saying so costs nothing). An elementary stream carries no
-    /// timestamps, so the default duration is the source's frame rate — without it mkvmerge assumes 25 fps
-    /// and a 23.976 film drifts a minute over two hours — and no tags, so the source's language and title
-    /// are put back. mkvmerge reads the RPU and writes the Matroska Dolby Vision mapping itself.
+    /// Whether the ffmpeg stage would map any stream at all. ffmpeg with no <c>-map</c> falls back to automatic
+    /// stream selection — video, audio and subtitles the caller may have excluded on purpose — so a
+    /// composition that selects nothing is not run; the output is then the converted video alone. Explicit
+    /// selections answer by their count; a null selection copies every stream of its kind and so maps
+    /// something exactly when the input has one (a null subtitle selection also carries attachments). An
+    /// additional input always selects at least one stream — the endpoint requires it. An unknown stream list
+    /// (the probe failed) answers true: running a stage that turns out empty fails honestly, skipping one
+    /// that was needed loses tracks.
     /// </summary>
-    internal static List<string> BuildMkvmergeArguments(string destination, string convertedLayer, string tracks, SourceProbe source)
+    internal static bool TracksStageMapsAnything(TranscodeJobRequest request, IReadOnlyList<ProbedStream> streams)
+    {
+        if (streams.Count == 0 || request.AdditionalInputs is { Count: > 0 })
+        {
+            return true;
+        }
+
+        var audio = request.AudioStreamIndexes is { } audioSelection
+            ? audioSelection.Count > 0
+            : streams.Any(stream => stream.Kind == "audio");
+        var subtitles = request.SubtitleStreamIndexes is { } subtitleSelection
+            ? subtitleSelection.Count > 0
+            : streams.Any(stream => stream.Kind is "subtitle" or "attachment");
+        return audio || subtitles;
+    }
+
+    /// <summary>
+    /// <c>mkvmerge</c> assembling the output: the converted elementary stream first, then every track of the
+    /// composition except a video (it has none, but saying so costs nothing) — or the video alone when the
+    /// composition was skipped because nothing was selected. An elementary stream carries no timestamps, so
+    /// the default duration is the source's frame rate — without it mkvmerge assumes 25 fps and a 23.976 film
+    /// drifts a minute over two hours — and no tags, so the source's language and title are put back.
+    /// mkvmerge reads the RPU and writes the Matroska Dolby Vision mapping itself.
+    /// </summary>
+    internal static List<string> BuildMkvmergeArguments(string destination, string convertedLayer, string? tracks, SourceProbe source)
     {
         var args = new List<string> { "--output", destination };
         if (source.VideoFrameRate is { Length: > 0 } frameRate)
@@ -164,8 +191,12 @@ public sealed partial class FfmpegTranscodeEngine
         }
 
         args.Add(convertedLayer);
-        args.Add("--no-video");
-        args.Add(tracks);
+        if (tracks is not null)
+        {
+            args.Add("--no-video");
+            args.Add(tracks);
+        }
+
         return args;
     }
 
@@ -257,16 +288,28 @@ public sealed partial class FfmpegTranscodeEngine
                 return;
             }
 
-            // 1. Everything but the picture, composed by ffmpeg exactly as any other job's tracks would be.
-            var compose = new ProcessStartInfo(_settings.FfmpegPath);
-            foreach (var arg in BuildArguments(job, hardware, [temps.Tracks]))
+            // 1. Everything but the picture, composed by ffmpeg exactly as any other job's tracks would be —
+            // unless the request selects nothing, in which case there is nothing to compose and the output is
+            // the converted video alone. (ffmpeg given no -map would select streams on its own.)
+            string? tracks = null;
+            if (TracksStageMapsAnything(request, await ProbeStreamsAsync(request.InputPath, cancellationToken)))
             {
-                compose.ArgumentList.Add(arg);
-            }
+                tracks = temps.Tracks;
+                var compose = new ProcessStartInfo(_settings.FfmpegPath);
+                foreach (var arg in BuildArguments(job, hardware, [tracks]))
+                {
+                    compose.ArgumentList.Add(arg);
+                }
 
-            if (!await RunStageAsync(job, compose, "ffmpeg", 0, StageProgress.Ffmpeg, stderrTail, cancellationToken))
+                if (!await RunStageAsync(job, compose, "ffmpeg", 0, StageProgress.Ffmpeg, stderrTail, cancellationToken))
+                {
+                    return;
+                }
+            }
+            else
             {
-                return;
+                _logger.LogInformation("Job {JobId}: no audio or subtitle track selected; the output carries the video alone.", job.JobId);
+                job.ReportProgress(StagePercent(1, DolbyVisionStages, 0));
             }
 
             // 2. The source's base and enhancement layer, as one elementary stream.
@@ -303,12 +346,12 @@ public sealed partial class FfmpegTranscodeEngine
             // 4. The output, assembled by mkvmerge. Exit code 1 is "finished with warnings" and still wrote
             // the file; only 2 is an error.
             var mux = new ProcessStartInfo(_settings.MkvmergePath);
-            foreach (var arg in BuildMkvmergeArguments(finalTemp, temps.ConvertedLayer, temps.Tracks, job.Source))
+            foreach (var arg in BuildMkvmergeArguments(finalTemp, temps.ConvertedLayer, tracks, job.Source))
             {
                 mux.ArgumentList.Add(arg);
             }
 
-            var expected = (TryFileLength(temps.ConvertedLayer) ?? 0) + (TryFileLength(temps.Tracks) ?? 0);
+            var expected = (TryFileLength(temps.ConvertedLayer) ?? 0) + (tracks is null ? 0 : TryFileLength(tracks) ?? 0);
             var muxProgress = StageProgress.Growth(finalTemp, expected > 0 ? expected : null, isOutput: true);
             if (!await RunStageAsync(job, mux, "mkvmerge", 3, muxProgress, stderrTail, cancellationToken, maxAcceptedExitCode: 1))
             {

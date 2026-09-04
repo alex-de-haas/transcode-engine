@@ -54,7 +54,14 @@ four stages, each one process under the job's cancel and no-progress watchdog:
 1. **The tracks.** ffmpeg composes the audio, subtitles, attachments, merged inputs, audio
    targets, metadata overrides and default flags exactly as any other job would, into a
    hidden intermediate Matroska with no video stream — the argument list is the composed
-   job's minus `-map 0:v:0` and `-c:v`, so nothing is copied that is about to be discarded.
+   job's minus `-map 0:v:0` and `-c:v`, plus `-vn`, so nothing is copied that is about to be
+   discarded. A request that selects nothing (empty audio and subtitle lists, no merged
+   input, or null selections on an input with nothing of the kind) skips this stage
+   altogether and the output is the converted video alone: ffmpeg given no `-map` would
+   select streams on its own, reintroducing the tracks the caller excluded and, without
+   `-vn`, re-encoding the picture into a file about to be thrown away. The input's streams
+   are listed for that decision; an unreadable list runs the stage, which fails honestly if
+   it turns out empty.
 2. **The layers.** `mkvextract input.mkv tracks ID:layers.hevc` writes the video track as an
    Annex B elementary stream with base and enhancement layer interleaved, which is how
    mkvextract writes a track carrying `BlockAdditions`. The track id comes from
@@ -97,10 +104,10 @@ during the last stage and the published file's size on completion.
 
 The image installs `mkvtoolnix` from apt and a pinned `dovi_tool` release, fetched in the
 build stage per `TARGETARCH` and checked against the SHA-256 GitHub publishes for the asset
-(see [Build and deployment](../build-and-deployment.md)); together they add 31.7 MB to the
+(see [Build and deployment](../build-and-deployment/feature.md)); together they add 31.7 MB to the
 image, measured on a `linux/arm64` build. `DOVI_TOOL_PATH`, `MKVMERGE_PATH`
 and `MKVEXTRACT_PATH` point the native `local` runtime at host installs
-([Configuration](../configuration.md)).
+([Configuration](../configuration/feature.md)).
 
 `GET /hardware` reports them under `tools` — `{ dolbyVisionConversion, doviTool,
 mkvtoolnix }`: a flag a consumer gates its UI on, and the two versions. Availability is a
@@ -113,10 +120,13 @@ honesty `effectiveHardware` keeps about encoders.
 
 Backend tests use xUnit and Imposter; no process ever starts.
 
-- `DolbyVisionConversionTests` — the ffmpeg stage mapping no video and naming no video
-  codec while keeping the selected tracks, and `keep` still mapping and copying the video;
-  the argument builders for `mkvextract`, `dovi_tool` and `mkvmerge` (default duration,
-  language and title present and omitted, the video first); the first video track taken
+- `DolbyVisionConversionTests` — the ffmpeg stage mapping no video, naming no video codec
+  and carrying `-vn` while keeping the selected tracks, and `keep` still mapping and
+  copying the video; the stage skipped when nothing is selected and run for a null
+  selection the input can satisfy, for attachments alone, for an explicit selection, for a
+  merge, and for an unreadable stream list; the argument builders for `mkvextract`,
+  `dovi_tool` and `mkvmerge` (default duration, language and title present and omitted,
+  the video first, and the video alone without a composition); the first video track taken
   from `mkvmerge --identify` and null without one or without a document; the create-time
   refusal of profile 8, profile 5, a recordless stream and a video-less input by name,
   profile 7 accepted, and an unreadable input let through; the output check accepting only profile 8 with
