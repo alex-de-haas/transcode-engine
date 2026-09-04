@@ -12,7 +12,7 @@ runtime app (`manifest.json`, `schemaVersion: "app.0.1"`, id
 update, backup/restore, logs — and injects the environment the app reads (data dir,
 mounts, ports, and, when enabled, telemetry). The app never hard-codes ports, origins,
 or paths. This doc is the reference for the manifest and the platform contract; the
-environment variables it produces are enumerated in [Configuration](configuration.md).
+environment variables it produces are enumerated in [Configuration](configuration/feature.md).
 
 ## Manifest anatomy
 
@@ -111,4 +111,4 @@ one.
 Manifest/platform integration (the device passthrough, mount injection, endpoint
 discovery, port binding per runtime, backups) is validated through Core-managed
 runtime, not unit tests. The settings-resolution layer that reads this environment is
-unit-tested — see [Configuration](configuration.md) and [Media mounts](media-mounts.md).
+unit-tested — see [Configuration](configuration/feature.md) and [Media mounts](media-mounts.md).

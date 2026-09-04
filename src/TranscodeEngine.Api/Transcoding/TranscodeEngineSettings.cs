@@ -23,6 +23,17 @@ public sealed class TranscodeEngineSettings
     /// <summary>Path to the <c>ffprobe</c> binary; defaults to a PATH lookup.</summary>
     public string FfprobePath { get; init; } = "ffprobe";
 
+    /// <summary>Path to the <c>dovi_tool</c> binary, which rewrites Dolby Vision RPU metadata; defaults to a PATH
+    /// lookup. With <see cref="MkvmergePath"/> and <see cref="MkvextractPath"/> it is what a profile 7 → 8.1
+    /// conversion needs; a host missing any of the three refuses that job rather than copying silently.</summary>
+    public string DoviToolPath { get; init; } = "dovi_tool";
+
+    /// <summary>Path to <c>mkvmerge</c> (MKVToolNix); defaults to a PATH lookup.</summary>
+    public string MkvmergePath { get; init; } = "mkvmerge";
+
+    /// <summary>Path to <c>mkvextract</c> (MKVToolNix); defaults to a PATH lookup.</summary>
+    public string MkvextractPath { get; init; } = "mkvextract";
+
     /// <summary>Default hardware acceleration when a job does not request one.</summary>
     public TranscodeHardware DefaultHardware { get; init; } = TranscodeHardware.Auto;
 
@@ -47,6 +58,9 @@ public sealed class TranscodeEngineSettings
             MediaRoots = mediaRoots,
             FfmpegPath = Read("FFMPEG_PATH") ?? "ffmpeg",
             FfprobePath = Read("FFPROBE_PATH") ?? "ffprobe",
+            DoviToolPath = Read("DOVI_TOOL_PATH") ?? "dovi_tool",
+            MkvmergePath = Read("MKVMERGE_PATH") ?? "mkvmerge",
+            MkvextractPath = Read("MKVEXTRACT_PATH") ?? "mkvextract",
             DefaultHardware = ParseHardware(Read("HWACCEL")) ?? TranscodeHardware.Auto,
             VaapiDevice = Read("VAAPI_DEVICE") ?? "/dev/dri/renderD128",
             MaxConcurrentJobs = Math.Max(1, ReadInt("MAX_CONCURRENT_JOBS", 1)),

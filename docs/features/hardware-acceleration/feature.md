@@ -29,7 +29,7 @@ hardware is really in effect.
 | **Software** (libx264 / libx265) | `docker` (default), or any fallback | No hardware needed. Starts on any host, including macOS Docker Desktop. |
 
 See [Hosty runtime app](../hosty-runtime-app.md#runtime-profiles) for the profiles and
-[Build and deployment](../build-and-deployment.md#running-under-each-runtime) for how to
+[Build and deployment](../build-and-deployment/feature.md#running-under-each-runtime) for how to
 launch each.
 
 ## The host probe (`HardwareProbe`)

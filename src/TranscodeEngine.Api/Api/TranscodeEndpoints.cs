@@ -162,6 +162,38 @@ public static class TranscodeEndpoints
                 }
             }
 
+            // A Dolby Vision conversion rides on a video copy and on Matroska at both ends: a re-encode drops
+            // the metadata whatever is asked, the enhancement layer is read out of a Matroska input, and
+            // mkvmerge writes the result. Whether the input is in fact profile 7 is the engine's to check,
+            // since it is the one that probes the input.
+            if (!TryParseDolbyVision(request.DolbyVision, out var dolbyVision))
+            {
+                return Results.BadRequest(new { error = $"dolbyVision '{request.DolbyVision}' is not supported (use 'keep' or 'toProfile81')." });
+            }
+
+            if (dolbyVision == DolbyVisionMode.ToProfile81)
+            {
+                if (!copyVideo)
+                {
+                    return Results.BadRequest(new { error = "dolbyVision 'toProfile81' needs the video copied: a re-encode drops Dolby Vision whatever is asked. Set videoCodec to 'copy'." });
+                }
+
+                if (!matroskaOutput)
+                {
+                    return Results.BadRequest(new { error = "dolbyVision 'toProfile81' writes Matroska: outputPath must end in .mkv." });
+                }
+
+                if (!request.InputPath.EndsWith(".mkv", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Results.BadRequest(new { error = "dolbyVision 'toProfile81' reads the enhancement layer out of a Matroska input: inputPath must be an .mkv." });
+                }
+
+                if (!DolbyVisionTooling.Available(settings))
+                {
+                    return Results.BadRequest(new { error = "dolbyVision 'toProfile81' needs dovi_tool and MKVToolNix, which this engine does not have (see GET /hardware)." });
+                }
+            }
+
             // An override names a position by (input, absolute index), so the stream it names has to be one
             // the job explicitly maps — the same requirement a chosen default track carries, for the same
             // reason: without an explicit list there is no position to write to.
@@ -241,9 +273,20 @@ public static class TranscodeEndpoints
                 request.DefaultSubtitleStreamIndex,
                 resolvedInputs.Count > 0 ? resolvedInputs : null,
                 request.MetadataOverrides?.Select(o => new StreamMetadataOverride(o.Input, o.StreamIndex, o.Language, o.Title)).ToList(),
-                audioTargets);
-            var descriptor = await engine.CreateAsync(jobRequest, ct);
-            return Results.Ok(descriptor);
+                audioTargets,
+                DolbyVision: dolbyVision);
+
+            // The engine refuses what only the probed input can tell — a Dolby Vision conversion of a source
+            // that is not profile 7 — as an ArgumentException, which is the same 400 as every rule above.
+            try
+            {
+                var descriptor = await engine.CreateAsync(jobRequest, ct);
+                return Results.Ok(descriptor);
+            }
+            catch (ArgumentException exception)
+            {
+                return Results.BadRequest(new { error = exception.Message });
+            }
         });
 
         // Inspection, not a job: it answers in the response rather than creating something to poll, so a
@@ -503,8 +546,28 @@ public static class TranscodeEndpoints
             "audioTargets re-encode tracks of a composed output; an extraction copies its streams.",
         { MetadataOverrides.Count: > 0 } =>
             "metadataOverrides address a composed output's stream positions; set language and title on the output itself.",
+        { DolbyVision: { } dolbyVision } when !string.IsNullOrWhiteSpace(dolbyVision) =>
+            "dolbyVision rewrites a composed output's picture; an extraction copies its streams.",
         _ => null,
     };
+
+    /// <summary>The two words <c>dolbyVision</c> accepts. Absent means keep, so a caller written before the
+    /// field existed gets exactly the job it always got.</summary>
+    private static bool TryParseDolbyVision(string? raw, out DolbyVisionMode mode)
+    {
+        switch (raw?.Trim().ToLowerInvariant())
+        {
+            case null or "" or "keep":
+                mode = DolbyVisionMode.Keep;
+                return true;
+            case "toprofile81" or "to-profile-81" or "to-profile-8.1" or "8.1":
+                mode = DolbyVisionMode.ToProfile81;
+                return true;
+            default:
+                mode = default;
+                return false;
+        }
+    }
 
     /// <summary>Whitespace is not a value: argument construction emits a field only when it has content, so
     /// carrying "" through would claim a metadata write the output never gets.</summary>

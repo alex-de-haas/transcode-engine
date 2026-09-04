@@ -1,8 +1,7 @@
 # Configuration
 
-Status: Implemented
 Created: 2026-07-03
-Updated: 2026-07-03
+Updated: 2026-09-04
 
 ## Description
 
@@ -19,9 +18,9 @@ Set by Core, not by the operator:
 | Variable | Read by | Purpose |
 | --- | --- | --- |
 | `HOSTY_APP_DATA_DIR` | engine | App data / scratch dir; the standalone fallback media root lives under `media/`. Falls back to `{contentRoot}/data` when unset. |
-| `HOSTY_MOUNT_MEDIA` | engine | Comma-joined `label=path` media mounts, parsed into the label→root map. See [Media mounts](media-mounts.md). |
+| `HOSTY_MOUNT_MEDIA` | engine | Comma-joined `label=path` media mounts, parsed into the label→root map. See [Media mounts](../media-mounts.md). |
 | `HOSTY_PORT_CONTROL` | Program.cs | Loopback control port under the `local` (localCommand) runtime; the app binds exactly this. Ignored in the container. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` (+ other `OTEL_*`) | engine | Presence switches on OTLP export; absence = no telemetry. See [Hosty runtime app](hosty-runtime-app.md#telemetry). |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` (+ other `OTEL_*`) | engine | Presence switches on OTLP export; absence = no telemetry. See [Hosty runtime app](../hosty-runtime-app.md#telemetry). |
 | `DOTNET_RUNNING_IN_CONTAINER` | Program.cs | Set by the docker image; when `true`, Kestrel's default binding (`ASPNETCORE_URLS`) is used instead of `HOSTY_PORT_CONTROL`. |
 | `ASPNETCORE_URLS` | container | Container listen URL (`http://+:8080`), set by the image. |
 
@@ -48,6 +47,9 @@ directly (e.g. for a local run) when needed:
 | --- | --- | --- |
 | `FFMPEG_PATH` | `ffmpeg` | Path to the `ffmpeg` binary; a bare name resolves on `PATH`. Useful to point the native `local` runtime at a specific host build. |
 | `FFPROBE_PATH` | `ffprobe` | Path to the `ffprobe` binary (used to probe input duration). |
+| `DOVI_TOOL_PATH` | `dovi_tool` | Path to `dovi_tool`, which rewrites Dolby Vision RPU metadata for `dolbyVision: toProfile81`. With the two below, its presence is what `GET /hardware` reports under `tools`; a host missing any of the three refuses that job option. |
+| `MKVMERGE_PATH` | `mkvmerge` | Path to MKVToolNix's `mkvmerge` (assembles a converted output and identifies the input's tracks). |
+| `MKVEXTRACT_PATH` | `mkvextract` | Path to MKVToolNix's `mkvextract` (writes the dual-layer video as an elementary stream). |
 
 ## Precedence notes
 
@@ -66,4 +68,4 @@ directly (e.g. for a local run) when needed:
 
 `TranscodeEngineSettingsTests` (xUnit) cover the resolution rules: the `HWACCEL` value
 parsing (`ParseHardware`, incl. aliases and unknown/empty → null), and the media-mount
-parsing (delegated to the cases in [Media mounts](media-mounts.md)).
+parsing (delegated to the cases in [Media mounts](../media-mounts.md)).

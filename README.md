@@ -60,7 +60,7 @@ GET    /jobs/{jobId}
 POST   /jobs/{jobId}/cancel
 DELETE /jobs/{jobId}?deleteOutput=
 GET    /events            (SSE: progress, started, completed, errored)
-GET    /hardware          { vaapiAvailable, vaapiDevice, renderDevices, videoToolboxAvailable, amfAvailable, checkedAt }
+GET    /hardware          { vaapiAvailable, vaapiDevice, renderDevices, videoToolboxAvailable, amfAvailable, checkedAt, tools }
 GET    /healthz
 ```
 
@@ -81,6 +81,11 @@ a missing input, or a path that escapes the root is a `400` so a job is never re
   AMF/VAAPI, `-q:v` for VideoToolbox), so the same level means the same picture wherever the job lands.
 - `audioTargets` — re-encodes chosen audio tracks to `eac3`/`ac3` while the rest are copied, per track.
   Independent of what happens to the picture, so shrinking only the audio is one job.
+- `dolbyVision` — `keep` (default) or `toProfile81`: on a video copy, rewrites a dual-layer Dolby Vision
+  profile 7 picture (a UHD Blu-ray remux) to single-layer profile 8.1, the form Apple TV and Infuse play as
+  Dolby Vision. Runs `mkvextract` → `dovi_tool` → `mkvmerge` beside ffmpeg; needs the tools `GET /hardware`
+  lists under `tools`, and an `.mkv` at both ends. See
+  [Dolby Vision conversion](docs/features/dolby-vision-conversion/feature.md).
 
 Each job snapshot (`GET /jobs`, `GET /jobs/{id}`, and the SSE `progress` events) carries `effectiveHardware`
 — the encoder family actually selected after auto-detection/fallback (`vaapi` / `videotoolbox` / `amf` /
@@ -89,8 +94,9 @@ Each job snapshot (`GET /jobs`, `GET /jobs/{id}`, and the SSE `progress` events)
 hardware — ffmpeg errors out if it cannot initialise the device rather than silently dropping to software.
 
 `GET /hardware` reports whether a VAAPI render node is visible inside the container (i.e. the `/dev/dri`
-passthrough worked), which render devices were found, and whether VideoToolbox is reachable (only when the
-engine runs natively on macOS — see [Hardware acceleration](#hardware-acceleration)).
+passthrough worked), which render devices were found, whether VideoToolbox is reachable (only when the
+engine runs natively on macOS — see [Hardware acceleration](#hardware-acceleration)), and under `tools`
+whether `dovi_tool` and MKVToolNix are present for the Dolby Vision conversion.
 
 ## Hardware acceleration
 

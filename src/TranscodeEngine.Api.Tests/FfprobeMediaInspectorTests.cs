@@ -155,6 +155,62 @@ public sealed class FfprobeMediaInspectorTests
         Assert.Equal(expected, Assert.Single(FfprobeMediaInspector.Map(Json(stream), "/media/x.mkv")!.Streams).Bitrate);
 
     [Fact]
+    public void Reads_the_dolby_vision_configuration_record()
+    {
+        // Starship Troopers (1997), a UHD Blu-ray remux: dual-layer profile 7 with the disc's base-layer
+        // compatibility id. The record is what tells it from a profile 8.1 that plays as Dolby Vision on
+        // Apple hardware; the flat Hdr answer cannot.
+        const string Stream = """
+            {"index":0,"codec_type":"video","codec_name":"hevc","color_transfer":"smpte2084",
+             "side_data_list":[
+               {"side_data_type":"Mastering display metadata"},
+               {"side_data_type":"DOVI configuration record","dv_version_major":1,"dv_version_minor":0,
+                "dv_profile":7,"dv_level":6,"rpu_present_flag":1,"el_present_flag":1,"bl_present_flag":1,
+                "dv_bl_signal_compatibility_id":6}]}
+            """;
+        var stream = Assert.Single(FfprobeMediaInspector.Map(Json(Stream), "/media/x.mkv")!.Streams);
+
+        Assert.Equal(HdrFormat.DolbyVision, stream.Hdr);
+        Assert.NotNull(stream.DolbyVision);
+        var record = stream.DolbyVision;
+        Assert.Equal(7, record.Profile);
+        Assert.Equal(6, record.Level);
+        Assert.Equal(6, record.BlSignalCompatibilityId);
+        Assert.True(record.RpuPresent);
+        Assert.True(record.ElPresent);
+        Assert.True(record.BlPresent);
+    }
+
+    [Fact]
+    public void A_single_layer_profile_8_record_reads_as_such()
+    {
+        // Avatar (2009): profile 8, HDR10-compatible base layer, no enhancement layer.
+        const string Stream = """
+            {"index":0,"codec_type":"video","codec_name":"hevc","color_transfer":"smpte2084",
+             "side_data_list":[{"side_data_type":"DOVI configuration record","dv_profile":8,"dv_level":6,
+               "rpu_present_flag":1,"el_present_flag":0,"bl_present_flag":1,"dv_bl_signal_compatibility_id":1}]}
+            """;
+        var record = Assert.Single(FfprobeMediaInspector.Map(Json(Stream), "/media/x.mkv")!.Streams).DolbyVision;
+        Assert.NotNull(record);
+
+        Assert.Equal(8, record.Profile);
+        Assert.Equal(1, record.BlSignalCompatibilityId);
+        Assert.False(record.ElPresent);
+    }
+
+    [Fact]
+    public void A_stream_without_a_record_has_no_dolby_vision()
+    {
+        Assert.Null(Assert.Single(FfprobeMediaInspector.Map(Json(Hdr10Video), "/media/x.mkv")!.Streams).DolbyVision);
+
+        // A record entry with no profile is not a record; the flat answer still says Dolby Vision, as before.
+        const string Typeless = """{"index":0,"codec_type":"video","color_transfer":"smpte2084","side_data_list":[{"side_data_type":"DOVI configuration record"}]}""";
+        var stream = Assert.Single(FfprobeMediaInspector.Map(Json(Typeless), "/media/x.mkv")!.Streams);
+        Assert.Equal(HdrFormat.DolbyVision, stream.Hdr);
+        Assert.Null(stream.DolbyVision);
+    }
+
+    [Fact]
     public void Output_without_streams_is_not_a_probe_result() =>
         Assert.Null(FfprobeMediaInspector.Map("""{"format":{}}""", "/media/x.mkv"));
 }

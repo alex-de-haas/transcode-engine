@@ -170,7 +170,48 @@ public sealed class FfprobeMediaInspector(
             Int(stream, "bits_per_raw_sample"),
             kind == ProbedStreamKind.Video ? Hdr(stream) : HdrFormat.Unknown,
             Int(stream, "channels"),
-            Int(stream, "sample_rate"));
+            Int(stream, "sample_rate"),
+            kind == ProbedStreamKind.Video ? DolbyVision(stream) : null);
+    }
+
+    /// <summary>
+    /// The Dolby Vision configuration record, from the <c>side_data_list</c> entry ffprobe types as
+    /// <c>DOVI configuration record</c>. Read field by field rather than inferred: the profile, the layer
+    /// flags and the base-layer compatibility id are exactly what a consumer needs to tell a disc's dual-layer
+    /// profile 7 from a single-layer 8.1, and nothing about them can be guessed from the transfer function.
+    /// An entry without a profile is not a record.
+    /// </summary>
+    private static DolbyVisionInfo? DolbyVision(JsonElement stream)
+    {
+        if (!stream.TryGetProperty("side_data_list", out var list) || list.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        foreach (var entry in list.EnumerateArray())
+        {
+            var type = String(entry, "side_data_type") ?? string.Empty;
+            if (!type.Contains("dovi", StringComparison.OrdinalIgnoreCase) &&
+                !type.Contains("dolby vision", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (Int(entry, "dv_profile") is not { } profile)
+            {
+                continue;
+            }
+
+            return new DolbyVisionInfo(
+                profile,
+                Int(entry, "dv_level") ?? 0,
+                Int(entry, "dv_bl_signal_compatibility_id") ?? 0,
+                Flag(entry, "rpu_present_flag"),
+                Flag(entry, "el_present_flag"),
+                Flag(entry, "bl_present_flag"));
+        }
+
+        return null;
     }
 
     /// <summary>

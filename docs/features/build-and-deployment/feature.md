@@ -1,8 +1,7 @@
 # Build and Deployment
 
-Status: Implemented
 Created: 2026-07-03
-Updated: 2026-07-03
+Updated: 2026-09-04
 
 ## Description
 
@@ -24,12 +23,23 @@ A two-stage build from the repo root:
   VA-API userspace stack — `vainfo`, `libva2`, `libva-drm2`, `mesa-va-drivers`,
   `libdrm2`. `mesa-va-drivers` covers both Intel (iHD/i965) and AMD (radeonsi); the
   host kernel driver behind a passed-through `/dev/dri` device does the actual work.
-  With no device present the engine still runs and falls back to software encoding. It
+  With no device present the engine still runs and falls back to software encoding.
+  It also installs `mkvtoolnix` (`mkvextract`, `mkvmerge`) and copies in `dovi_tool`,
+  the two the [Dolby Vision conversion](../dolby-vision-conversion/feature.md) runs on. It
   copies the published app + `docker/entrypoint.sh`, sets
   `ASPNETCORE_URLS=http://+:8080`, exposes `8080`, and runs the entrypoint.
+- **`dovi_tool`** is fetched in the build stage — the SDK image has `curl`, the runtime
+  image need not — as a pinned static release (`DOVI_TOOL_VERSION`, 2.3.3) whose archive
+  is checked against the SHA-256 GitHub publishes for the asset, one per architecture
+  (`DOVI_TOOL_SHA256_AMD64` / `_ARM64`). `TARGETARCH` picks the asset: each platform's
+  build runs on its own native runner (below), so it names the platform being built, and
+  an architecture with no release fails the build rather than shipping an image that
+  refuses the option. Measured on 2026-09-04 with a local `linux/arm64` build, the two
+  together grow the image from 650.1 MB to 681.8 MB — 31.7 MB, almost all of it
+  `mkvtoolnix` and its libraries; the `dovi_tool` binary is under 5 MB.
 
 Hardware VAAPI needs a `/dev/dri` render node at runtime, granted through the
-`docker-vaapi` [manifest profile](hosty-runtime-app.md#runtime-profiles).
+`docker-vaapi` [manifest profile](../hosty-runtime-app.md#runtime-profiles).
 
 ## The entrypoint (`docker/entrypoint.sh`)
 
@@ -60,7 +70,7 @@ assembles the tagged manifest list from those digests. Images land at
 
 Point Hosty Core at the manifest; the `media` mount and settings are configured through
 the Shell. Which runtime you pick determines the available encoder (see
-[Hardware acceleration](hardware-acceleration/feature.md)):
+[Hardware acceleration](../hardware-acceleration/feature.md)):
 
 ```bash
 # Default: software encoding, starts everywhere (incl. macOS Docker Desktop, no /dev/dri).
@@ -88,7 +98,7 @@ D3D11VA + the `*_amf` encoders) when the host has the AMD Adrenalin driver (whic
 
 Before it is functional, bind at least one host path into the `media` mount with the
 same label the consumer uses for its matching catalog root (see
-[Media mounts](media-mounts.md)).
+[Media mounts](../media-mounts.md)).
 
 ## Local development
 
@@ -111,4 +121,4 @@ API, argument construction, and mount-label logic; hardware VAAPI requires the
 CI runs the xUnit suite on every push/PR. The image build is exercised by the `publish`
 workflow. Hardware encoding (VAAPI / VideoToolbox / AMF) depends on real host devices
 and is validated at the runtime level, not in CI — see
-[Hardware acceleration](hardware-acceleration/feature.md).
+[Hardware acceleration](../hardware-acceleration/feature.md).

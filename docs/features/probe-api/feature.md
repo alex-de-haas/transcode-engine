@@ -1,7 +1,7 @@
 # Probe API
 
 Created: 2026-07-27
-Updated: 2026-08-06
+Updated: 2026-09-04
 
 `POST /probe` inspects one media file on a media mount and returns a normalized
 description of its container and streams. It exists so a consumer does not have to
@@ -42,9 +42,18 @@ per file.
     { "index": 0, "kind": "Video", "codec": "hevc", "profile": "Main 10",
       "language": "eng", "title": null, "isDefault": true, "isForced": false,
       "bitrate": 7500000, "width": 1920, "height": 1080, "frameRate": 23.976,
-      "bitDepth": 10, "hdr": "Hdr10", "channels": null, "sampleRate": null }
+      "bitDepth": 10, "hdr": "Hdr10", "channels": null, "sampleRate": null,
+      "dolbyVision": null }
   ]
 }
+```
+
+A Dolby Vision stream fills `dolbyVision` with its configuration record:
+
+```json
+"hdr": "DolbyVision",
+"dolbyVision": { "profile": 7, "level": 6, "blSignalCompatibilityId": 6,
+                 "rpuPresent": true, "elPresent": true, "blPresent": true }
 ```
 
 Enums cross the wire **by name** — `"Video"`, `"Hdr10"` — carried by the contract
@@ -108,6 +117,20 @@ transfer function. `Hdr10Plus` is claimed only when the stream carries SMPTE
 2094-40 side data — a file whose dynamic layer lives purely in frame side data
 reads as `Hdr10`, under-reporting rather than guessing.
 
+### Dolby Vision
+
+`DolbyVision` alone cannot say what a consumer has to decide, so a video stream that
+carries the record also reports it, field by field, as `dolbyVision`: `profile`,
+`level`, `blSignalCompatibilityId`, `rpuPresent`, `elPresent`, `blPresent` — the
+same 24 bytes the container holds in an MP4 `dvcC`/`dvvC` box or a Matroska
+`BlockAdditionMapping`, read through `ffprobe`'s `side_data_list`. A profile 7 with an
+enhancement layer and compatibility id 6 is a UHD Blu-ray remux that Apple TV and
+Infuse play as HDR10; a profile 8 with compatibility id 1 plays as Dolby Vision; a
+profile 5 has no viewable base layer. The field is null for a stream without a
+record, for a record entry that names no profile, and always for anything but video.
+It is what [Dolby Vision conversion](../dolby-vision-conversion/feature.md) decides
+on, and what a consumer stores to show which kind a file is.
+
 ## Bounds
 
 A probe is bounded by the same 30-second timeout job creation applies to its own
@@ -122,7 +145,9 @@ result.
   emits it: the container taken from the extension rather than the demuxer list;
   the overall figures; every HDR case including Dolby Vision side data, SMPTE
   2094-40, an absent transfer function, and a PQ file carrying only static
-  mastering metadata; HDR answered only for video; embedded cover art keeping its
+  mastering metadata; the Dolby Vision record read field by field for a profile 7
+  disc remux and a profile 8.1 stream, and null without one or for a typed entry
+  that names no profile; HDR answered only for video; embedded cover art keeping its
   index so the numbering matches `ffprobe`; the track name read from either
   container's tag; `und` becoming no language; a stream bitrate read from
   `bit_rate`, from a `BPS` tag and from a language-suffixed one, with `bit_rate`

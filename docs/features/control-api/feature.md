@@ -1,7 +1,7 @@
 # Control API
 
 Created: 2026-07-03
-Updated: 2026-08-07
+Updated: 2026-09-04
 
 ## Description
 
@@ -62,17 +62,22 @@ Body (`CreateJobRequest`). `inputPath` is required, and so is exactly one of
 | `additionalInputs` | object[]? | Further files whose streams join the output — a merge. Says nothing about the picture: the video follows `videoCodec`, so a merge may re-encode. Naming any only changes that field's **default** to `copy`. See [Merge Jobs](../merge-jobs/feature.md). |
 | `metadataOverrides` | object[]? | Rewrites an output stream's `language`/`title`. Applies to a merge and to a plain transcode alike. |
 | `audioTargets` | object[]? | Re-encodes chosen audio tracks (`{ input, streamIndex, codec, bitrate? }`, codec `eac3`/`ac3`) while the rest are copied. Requires `audioStreamIndexes`. Independent of what happens to the picture. See [Compression controls](../compression-controls/feature.md). |
+| `dolbyVision` | string? | `keep` (default) or `toProfile81`: rewrites a dual-layer Dolby Vision profile 7 picture to single-layer profile 8.1 while it is copied. Requires the video copied (`videoCodec: copy`, or a merge naming none), an `.mkv` input and output, and the tools `GET /hardware` lists under `tools`; the engine then refuses an input that is not profile 7. See [Dolby Vision conversion](../dolby-vision-conversion/feature.md). |
 
 The handler validates before it mutates: it parses the codec/hardware/quality level,
 range-checks `maxHeight`, rejects negative stream indices, rejects encode-only knobs
 (`maxHeight` / `qualityLevel`) whenever the video is copied — asked for with
 `videoCodec: copy` or defaulted to by a merge that named none — requires a
-chosen default track to be in its explicit index list, and rejects a subtitle
+chosen default track to be in its explicit index list, rejects a subtitle
 selection for a non-`.mkv` output (subtitles ride only in Matroska — see
-[Transcode engine](../transcode-engine/feature.md#ffmpeg-argument-construction)). It then
+[Transcode engine](../transcode-engine/feature.md#ffmpeg-argument-construction)), and
+rejects `dolbyVision: toProfile81` wherever it could not take effect — a re-encode, a
+non-`.mkv` file at either end, an engine without the tools. It then
 resolves the input/output paths against the media mounts (an unknown `mountLabel` or
 an off-mount path is a `400`), checks the input exists, and checks output ≠ input —
-only then does it hand off to the engine, which probes duration and enqueues.
+only then does it hand off to the engine, which probes duration and enqueues. A
+refusal the engine makes from that probe — a Dolby Vision conversion of a source that
+is not profile 7 — comes back as the same `400` with its reason.
 
 The response is a `JobDescriptor` — what is known immediately, before a worker picks
 the job up:
@@ -160,6 +165,7 @@ a consumer can surface what the host actually offers:
 | `videoToolboxAvailable` | bool | `true` only when the engine runs natively on macOS. |
 | `amfAvailable` | bool | `true` only when the engine runs natively on Windows and the AMD driver's `amfrt64.dll` is present. |
 | `checkedAt` | DateTimeOffset | When the probe ran. |
+| `tools` | object | `{ dolbyVisionConversion, doviTool, mkvtoolnix }` — whether `dovi_tool`, `mkvmerge` and `mkvextract` are all reachable (the flag a consumer gates `dolbyVision: toProfile81` on) and the two versions, null where a tool is missing. Read lazily on the first call and kept. See [Dolby Vision conversion](../dolby-vision-conversion/feature.md#the-tools). |
 
 See [Hardware acceleration](../hardware-acceleration/feature.md) for how these map to the
 runtime profiles.
@@ -180,7 +186,10 @@ Required coverage:
 - `POST /jobs`: unknown `mountLabel` → `400`, missing input → `400`, `copy` +
   `maxHeight` → `400`, a chosen default without / not in its index list → `400`,
   subtitle selection on a non-`.mkv` output → `400`, and a valid request → `200`
-  with the descriptor.
+  with the descriptor. `dolbyVision` in `DolbyVisionJobEndpointTests`: an unknown
+  word, a re-encode, an extraction, a non-`.mkv` file at either end, and an engine
+  without the tools → `400`; a copy and a codec-less merge → `200` with the mode on
+  the engine's request; the engine's own refusal → `400` with its reason.
 - Path resolution (label selection, traversal safety) is covered in
   [Media mounts](../media-mounts.md).
 - The snapshot/argument derivations that back these responses are unit-tested in the

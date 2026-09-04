@@ -53,6 +53,20 @@ public enum TranscodeHardware
     None,
 }
 
+/// <summary>
+/// What happens to a source's Dolby Vision when the picture is copied. <see cref="Keep"/> leaves the stream
+/// exactly as it is. <see cref="ToProfile81"/> rewrites a dual-layer profile 7 source — every UHD Blu-ray
+/// remux — into single-layer profile 8.1: the RPU metadata is rewritten, the enhancement layer is dropped,
+/// and the HEVC picture is copied byte for byte. Profile 7 is the one form of Dolby Vision that Apple TV and
+/// Infuse cannot decode and quietly play as HDR10; profile 8.1 is the form they play as Dolby Vision. Only
+/// meaningful on a video copy: a re-encode drops Dolby Vision whatever is asked.
+/// </summary>
+public enum DolbyVisionMode
+{
+    Keep,
+    ToProfile81,
+}
+
 /// <summary>What an extracted stream is written as. <see cref="Copy"/> is the whole point — an extraction
 /// takes the packets as they are — and the text targets exist for the one case that cannot: a subtitle codec
 /// with no file form of its own (notably <c>mov_text</c>) has to become one to be extracted at all. There is
@@ -95,6 +109,10 @@ public sealed record ExtractionOutput(
 /// matching explicit index list); <c>null</c> keeps the source dispositions.
 /// </para>
 /// <para>
+/// <see cref="DolbyVision"/> asks for the picture's Dolby Vision to be rewritten to profile 8.1 while it is
+/// copied (<see cref="DolbyVisionMode"/>); the endpoint refuses it with anything but a video copy.
+/// </para>
+/// <para>
 /// <see cref="Outputs"/> is the other shape this request takes: naming any makes the job an <b>extraction</b>,
 /// which writes each named stream to its own file and produces no composed output at all. Every field above
 /// describes a composed output and is refused alongside it — there is no picture in an extraction to encode,
@@ -115,10 +133,16 @@ public sealed record TranscodeJobRequest(
     IReadOnlyList<AdditionalInput>? AdditionalInputs = null,
     IReadOnlyList<StreamMetadataOverride>? MetadataOverrides = null,
     IReadOnlyList<AudioTarget>? AudioTargets = null,
-    IReadOnlyList<ExtractionOutput>? Outputs = null)
+    IReadOnlyList<ExtractionOutput>? Outputs = null,
+    DolbyVisionMode DolbyVision = DolbyVisionMode.Keep)
 {
     /// <summary>Whether this job writes its input's streams out as separate files rather than composing one.</summary>
     public bool IsExtraction => Outputs is { Count: > 0 };
+
+    /// <summary>Whether this job rewrites the picture's Dolby Vision to profile 8.1 on its way through. Such
+    /// a job runs as several tool stages rather than one ffmpeg invocation — see
+    /// <c>FfmpegTranscodeEngine.DolbyVision.cs</c>.</summary>
+    public bool ConvertsDolbyVision => DolbyVision == DolbyVisionMode.ToProfile81;
 
     /// <summary>Every file this job produces, in the order it declares them. One entry for a composed job,
     /// one per stream for an extraction — the single list everything downstream (publishing, deletion,

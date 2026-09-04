@@ -18,6 +18,13 @@ namespace TranscodeEngine.Api.Api;
 /// explicit index list (so the absolute index maps to an output position) and must be a member of it.
 /// Subtitle selection/defaults apply only to Matroska (<c>.mkv</c>) outputs.
 /// <para>
+/// <see cref="DolbyVision"/> — <c>keep</c> (default) or <c>toProfile81</c> — rewrites a dual-layer Dolby
+/// Vision profile 7 picture to single-layer profile 8.1 while it is copied, which is the form Apple TV and
+/// Infuse play as Dolby Vision. It requires the video to be copied, a Matroska input and output, and the
+/// tools <c>GET /hardware</c> reports under <c>tools</c>; the engine then refuses an input that is not
+/// profile 7.
+/// </para>
+/// <para>
 /// <see cref="Outputs"/> is the alternative to <see cref="OutputPath"/>, and the two are mutually exclusive:
 /// naming outputs makes the job an <b>extraction</b>, which writes each named stream to its own file instead
 /// of composing one. Everything above describes a composed output and is rejected alongside it.
@@ -39,7 +46,8 @@ public sealed record CreateJobRequest(
     IReadOnlyList<AdditionalInputRequest>? AdditionalInputs = null,
     IReadOnlyList<StreamMetadataOverrideRequest>? MetadataOverrides = null,
     IReadOnlyList<AudioTargetRequest>? AudioTargets = null,
-    IReadOnlyList<OutputRequest>? Outputs = null);
+    IReadOnlyList<OutputRequest>? Outputs = null,
+    string? DolbyVision = null);
 
 /// <summary>
 /// One stream of the input written out as its own file — how an extraction is expressed. The path resolves
