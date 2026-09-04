@@ -232,9 +232,22 @@ public sealed class DolbyVisionConversionTests
     [InlineData("""{"tracks":[{"id":0,"type":"audio"},{"id":1,"type":"subtitles"}]}""", "0:audio, 1:subtitles")]
     [InlineData("""{"tracks":[]}""", "(empty)")]
     [InlineData("""{"container":{}}""", "(no tracks array)")]
+    // Valid JSON of the wrong shape — a root that is not an object, a tracks entry that is not — is
+    // described, never thrown on: TryGetProperty on a non-object is an InvalidOperationException, and a
+    // diagnostic that crashes has explained nothing.
+    [InlineData("[]", "(no tracks array)")]
+    [InlineData(""""ok"""", "(no tracks array)")]
+    [InlineData("""{"tracks":[1,{"id":0,"type":"video"},"x"]}""", "?:?, 0:video, ?:?")]
     [InlineData("not json", "(unreadable: ")]
     public void DescribeTracks_SaysWhatTheDocumentHeld(string identify, string expected) =>
         Assert.StartsWith(expected, FfmpegTranscodeEngine.DescribeTracks(identify));
+
+    [Theory]
+    [InlineData("[]")]
+    [InlineData(""""ok"""")]
+    [InlineData("""{"tracks":[1,"x"]}""")]
+    public void ParseVideoTrackId_TreatsValidJsonOfTheWrongShapeAsNoTrack(string identify) =>
+        Assert.Null(FfmpegTranscodeEngine.ParseVideoTrackId(identify));
 
     private const string RealIdentification = """
         {

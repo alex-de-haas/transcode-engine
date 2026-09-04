@@ -276,7 +276,10 @@ public sealed partial class FfmpegTranscodeEngine
             // Whitespace, then a byte-order mark, then whitespace again: a tool that prints a blank line before
             // the mark is as plausible as one that prints the mark first, and the mark is not whitespace to Trim.
             using var document = JsonDocument.Parse(identifyJson.AsMemory().Trim().TrimStart('\uFEFF').Trim());
-            if (!document.RootElement.TryGetProperty("tracks", out var tracks) || tracks.ValueKind != JsonValueKind.Array)
+            // TryGetProperty throws on anything but an object, and a document that is valid JSON of the wrong
+            // shape must read as "no track", not as an error in the reader.
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("tracks", out var tracks) || tracks.ValueKind != JsonValueKind.Array)
             {
                 return null;
             }
@@ -662,13 +665,18 @@ public sealed partial class FfmpegTranscodeEngine
         try
         {
             using var document = JsonDocument.Parse(identifyJson.AsMemory().Trim().TrimStart('\uFEFF').Trim());
-            if (!document.RootElement.TryGetProperty("tracks", out var tracks) || tracks.ValueKind != JsonValueKind.Array)
+            // The same guards as the parser: valid JSON of the wrong shape is described, not thrown on — this is
+            // the diagnostic path, and a diagnostic that crashes has explained nothing.
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("tracks", out var tracks) || tracks.ValueKind != JsonValueKind.Array)
             {
                 return "(no tracks array)";
             }
 
             var described = tracks.EnumerateArray()
-                .Select(track => $"{(track.TryGetProperty("id", out var id) ? id.ToString() : "?")}:{(track.TryGetProperty("type", out var type) ? type.ToString() : "?")}")
+                .Select(track => track.ValueKind == JsonValueKind.Object
+                    ? $"{(track.TryGetProperty("id", out var id) ? id.ToString() : "?")}:{(track.TryGetProperty("type", out var type) ? type.ToString() : "?")}"
+                    : "?:?")
                 .ToList();
             return described.Count == 0 ? "(empty)" : string.Join(", ", described);
         }
