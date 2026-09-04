@@ -14,7 +14,7 @@ dictionary and are never resumed across a restart — and surfaces only live sna
 plus start/complete/fail transition events.
 
 The engine is configured entirely from `TranscodeEngineSettings` (see
-[Configuration](../configuration.md)); it never hard-codes ffmpeg paths, the render
+[Configuration](../configuration/feature.md)); it never hard-codes ffmpeg paths, the render
 device, or the worker count.
 
 ## Job queue and worker loops

@@ -1,6 +1,5 @@
 # Build and Deployment
 
-Status: Implemented
 Created: 2026-07-03
 Updated: 2026-09-04
 
@@ -26,7 +25,7 @@ A two-stage build from the repo root:
   host kernel driver behind a passed-through `/dev/dri` device does the actual work.
   With no device present the engine still runs and falls back to software encoding.
   It also installs `mkvtoolnix` (`mkvextract`, `mkvmerge`) and copies in `dovi_tool`,
-  the two the [Dolby Vision conversion](dolby-vision-conversion/feature.md) runs on. It
+  the two the [Dolby Vision conversion](../dolby-vision-conversion/feature.md) runs on. It
   copies the published app + `docker/entrypoint.sh`, sets
   `ASPNETCORE_URLS=http://+:8080`, exposes `8080`, and runs the entrypoint.
 - **`dovi_tool`** is fetched in the build stage — the SDK image has `curl`, the runtime
@@ -40,7 +39,7 @@ A two-stage build from the repo root:
   `mkvtoolnix` and its libraries; the `dovi_tool` binary is under 5 MB.
 
 Hardware VAAPI needs a `/dev/dri` render node at runtime, granted through the
-`docker-vaapi` [manifest profile](hosty-runtime-app.md#runtime-profiles).
+`docker-vaapi` [manifest profile](../hosty-runtime-app.md#runtime-profiles).
 
 ## The entrypoint (`docker/entrypoint.sh`)
 
@@ -71,7 +70,7 @@ assembles the tagged manifest list from those digests. Images land at
 
 Point Hosty Core at the manifest; the `media` mount and settings are configured through
 the Shell. Which runtime you pick determines the available encoder (see
-[Hardware acceleration](hardware-acceleration/feature.md)):
+[Hardware acceleration](../hardware-acceleration/feature.md)):
 
 ```bash
 # Default: software encoding, starts everywhere (incl. macOS Docker Desktop, no /dev/dri).
@@ -99,7 +98,7 @@ D3D11VA + the `*_amf` encoders) when the host has the AMD Adrenalin driver (whic
 
 Before it is functional, bind at least one host path into the `media` mount with the
 same label the consumer uses for its matching catalog root (see
-[Media mounts](media-mounts.md)).
+[Media mounts](../media-mounts.md)).
 
 ## Local development
 
@@ -122,4 +121,4 @@ API, argument construction, and mount-label logic; hardware VAAPI requires the
 CI runs the xUnit suite on every push/PR. The image build is exercised by the `publish`
 workflow. Hardware encoding (VAAPI / VideoToolbox / AMF) depends on real host devices
 and is validated at the runtime level, not in CI — see
-[Hardware acceleration](hardware-acceleration/feature.md).
+[Hardware acceleration](../hardware-acceleration/feature.md).
