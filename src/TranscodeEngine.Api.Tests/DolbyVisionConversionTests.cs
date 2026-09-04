@@ -219,6 +219,115 @@ public sealed class DolbyVisionConversionTests
         Assert.Equal(1, FfmpegTranscodeEngine.ParseVideoTrackId(identify));
 
     [Fact]
+    public void ParseVideoTrackId_ReadsARealIdentification()
+    {
+        // mkvmerge v82's own output for an HEVC + AC-3 Matroska, captured from the engine image and kept
+        // verbatim: attachments, chapters, container properties, the codec private data — everything the
+        // real document carries around the two entries that matter.
+        Assert.Equal(0, FfmpegTranscodeEngine.ParseVideoTrackId(RealIdentification));
+        Assert.Equal("0:video, 1:audio", FfmpegTranscodeEngine.DescribeTracks(RealIdentification));
+    }
+
+    [Theory]
+    [InlineData("""{"tracks":[{"id":0,"type":"audio"},{"id":1,"type":"subtitles"}]}""", "0:audio, 1:subtitles")]
+    [InlineData("""{"tracks":[]}""", "(empty)")]
+    [InlineData("""{"container":{}}""", "(no tracks array)")]
+    [InlineData("not json", "(unreadable: ")]
+    public void DescribeTracks_SaysWhatTheDocumentHeld(string identify, string expected) =>
+        Assert.StartsWith(expected, FfmpegTranscodeEngine.DescribeTracks(identify));
+
+    private const string RealIdentification = """
+        {
+          "attachments": [],
+          "chapters": [],
+          "container": {
+            "properties": {
+              "container_type": 17,
+              "duration": 6484508000000,
+              "is_providing_timestamps": true,
+              "muxing_application": "Lavf62.12.102",
+              "segment_uid": "ae5468f340e13c6cc19b432ea32e8f9a",
+              "timestamp_scale": 1000000,
+              "writing_application": "Lavf62.12.102"
+            },
+            "recognized": true,
+            "supported": true,
+            "type": "Matroska"
+          },
+          "errors": [],
+          "file_name": "/m/Enola Holmes 3 (2026) - HEVC.mkv",
+          "global_tags": [
+            {
+              "num_entries": 3
+            }
+          ],
+          "identification_format_version": 19,
+          "track_tags": [
+            {
+              "num_entries": 2,
+              "track_id": 0
+            },
+            {
+              "num_entries": 1,
+              "track_id": 1
+            }
+          ],
+          "tracks": [
+            {
+              "codec": "HEVC/H.265/MPEG-H",
+              "id": 0,
+              "properties": {
+                "chroma_siting": "1,2",
+                "codec_id": "V_MPEGH/ISO/HEVC",
+                "codec_private_data": "010160000000b000000000003ff000fcfdf8f800000f03200001001840010c01ffff016000000300b0000003000003003f1702402100010029420101016000000300b0000003000003003fa005a201316205ee45914bff2e7f13fac05a810101004022000100074401c072f45364",
+                "codec_private_length": 110,
+                "color_range": 1,
+                "default_duration": 41666700,
+                "default_track": false,
+                "display_dimensions": "720x304",
+                "display_unit": 0,
+                "enabled_track": true,
+                "forced_track": false,
+                "language": "und",
+                "minimum_timestamp": 42000000,
+                "num_index_entries": 12969,
+                "number": 1,
+                "packetizer": "mpegh_p2_video",
+                "pixel_dimensions": "720x304",
+                "tag_duration": "01:48:04.506000000",
+                "tag_encoder": "Lavc62.28.102 hevc_videotoolbox",
+                "uid": 16707644069576102787
+              },
+              "type": "video"
+            },
+            {
+              "codec": "AC-3",
+              "id": 1,
+              "properties": {
+                "audio_bits_per_sample": 32,
+                "audio_channels": 6,
+                "audio_sampling_frequency": 48000,
+                "codec_id": "A_AC3",
+                "codec_private_length": 0,
+                "default_duration": 32000000,
+                "default_track": false,
+                "enabled_track": true,
+                "forced_track": false,
+                "language": "und",
+                "minimum_timestamp": 0,
+                "num_index_entries": 0,
+                "number": 2,
+                "tag_duration": "01:48:04.508000000",
+                "uid": 13934924149706002149
+              },
+              "type": "audio"
+            }
+          ],
+          "warnings": []
+        }
+        """;
+
+    [Fact]
     public void Identify_PassesOnlyTheIdentifyOptionsAndTheFile()
     {
         // mkvmerge in identification mode takes the first argument that is not an identify option as the

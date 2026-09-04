@@ -73,7 +73,9 @@ four stages, each one process under the job's cancel and no-progress watchdog:
    which is how one real job failed. Every tool's output is read as UTF-8 whatever the
    host's console code page (.NET's default on Windows is that code page), a byte-order
    mark ahead of the document is skipped, and when no video track can be read the log
-   carries mkvmerge's exit code and output, so a failure here is diagnosable from the log.
+   carries mkvmerge's exit code, the document's length, the tracks it named as `id:type`
+   pairs (or that it had none, or could not be read), and its stderr — so a failure here
+   is diagnosable from the log rather than reproduced by hand on the host.
 3. **The rewrite.** `dovi_tool -m 2 convert --discard layers.hevc -o dv81.hevc` rewrites
    every RPU to profile 8.1 with base-layer compatibility id 1 and drops the enhancement
    layer; the base layer is copied. The source layers are deleted as soon as this stage
@@ -135,8 +137,10 @@ Backend tests use xUnit and Imposter; no process ever starts.
   `dovi_tool` and `mkvmerge` (default duration, language and title present and omitted,
   the video first, and the video alone without a composition); the first video track taken
   from `mkvmerge --identify`, null without one or without a document, and found behind a
-  byte-order mark or leading whitespace; the identify arguments being the identify options
-  and the file alone; the create-time
+  byte-order mark or leading whitespace, and read out of a real mkvmerge v82 document kept
+  verbatim; the tracks summary for a document with no video, with no tracks, with no
+  tracks array, and one that is not JSON; the identify arguments being the identify
+  options and the file alone; the create-time
   refusal of profile 8, profile 5, a recordless stream and a video-less input by name,
   profile 7 accepted, and an unreadable input let through; the output check accepting only profile 8 with
   compatibility id 1; the free-space rule needing twice the input and only when both

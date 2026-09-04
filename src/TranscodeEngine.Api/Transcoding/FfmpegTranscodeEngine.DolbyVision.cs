@@ -610,6 +610,30 @@ public sealed partial class FfmpegTranscodeEngine
         _logger.LogWarning("Job {JobId} failed: {Reason} {Tail}", job.JobId, reason, stderrTail.Text);
     }
 
+    /// <summary>The tracks an identification names, as <c>id:type</c> pairs — what a log needs when none of them
+    /// was the video: whether the document was readable at all, whether it had a tracks array, and what the
+    /// entries were called.</summary>
+    internal static string DescribeTracks(string identifyJson)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(identifyJson.AsMemory().Trim().TrimStart('\uFEFF').Trim());
+            if (!document.RootElement.TryGetProperty("tracks", out var tracks) || tracks.ValueKind != JsonValueKind.Array)
+            {
+                return "(no tracks array)";
+            }
+
+            var described = tracks.EnumerateArray()
+                .Select(track => $"{(track.TryGetProperty("id", out var id) ? id.ToString() : "?")}:{(track.TryGetProperty("type", out var type) ? type.ToString() : "?")}")
+                .ToList();
+            return described.Count == 0 ? "(empty)" : string.Join(", ", described);
+        }
+        catch (JsonException exception)
+        {
+            return $"(unreadable: {exception.Message})";
+        }
+    }
+
     /// <summary>The first few hundred characters of a tool's output, enough to see what went wrong without
     /// putting a whole identification into one log line.</summary>
     private static string Head(string? text) =>
@@ -654,10 +678,12 @@ public sealed partial class FfmpegTranscodeEngine
                 if (trackId is null)
                 {
                     // The one answer that used to be silent: what mkvmerge actually said, so the next failure
-                    // of this kind is diagnosable from the log rather than reproduced by hand on the host.
+                    // of this kind is diagnosable from the log rather than reproduced by hand on the host. The
+                    // tracks are summarised rather than the document's head quoted — a real failure's head was
+                    // all attachments and chapters, and the part that mattered was past the cut.
                     _logger.LogWarning(
-                        "mkvmerge --identify found no video track in {Input} (exit {Code}). stdout: {Stdout} stderr: {Stderr}",
-                        inputPath, process.ExitCode, Head(stdout), Head(errors));
+                        "mkvmerge --identify found no video track in {Input} (exit {Code}, {Length} chars). tracks: {Tracks} stderr: {Stderr}",
+                        inputPath, process.ExitCode, stdout.Length, DescribeTracks(stdout), Head(errors));
                 }
 
                 return trackId;
