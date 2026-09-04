@@ -208,6 +208,21 @@ public sealed class DolbyVisionConversionTests
     public void ParseVideoTrackId_AnswersNullWithoutAVideoTrack(string identify) =>
         Assert.Null(FfmpegTranscodeEngine.ParseVideoTrackId(identify));
 
+    [Theory]
+    // mkvmerge on Windows puts a byte-order mark in front of redirected output; read as UTF-8 that is one
+    // character ahead of the document, and read in the console code page it was three — both of which
+    // JsonDocument refuses. A job on a real profile 7 source failed exactly here, with no log of why.
+    [InlineData("\uFEFF{\"tracks\":[{\"id\":1,\"type\":\"video\"}]}")]
+    [InlineData("\r\n  {\"tracks\":[{\"id\":1,\"type\":\"video\"}]}\r\n")]
+    public void ParseVideoTrackId_SkipsAByteOrderMarkAndWhitespaceAheadOfTheDocument(string identify) =>
+        Assert.Equal(1, FfmpegTranscodeEngine.ParseVideoTrackId(identify));
+
+    [Fact]
+    public void Identify_AsksForJsonWithoutAByteOrderMark() =>
+        Assert.Equal(
+            ["--no-bom", "--identification-format", "json", "--identify", "/in/movie.mkv"],
+            FfmpegTranscodeEngine.BuildIdentifyArguments("/in/movie.mkv"));
+
     // ---- what may be converted, and what counts as converted ----
 
     [Fact]
