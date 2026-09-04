@@ -214,6 +214,7 @@ public sealed class DolbyVisionConversionTests
     // JsonDocument refuses. A job on a real profile 7 source failed exactly here, with no log of why.
     [InlineData("\uFEFF{\"tracks\":[{\"id\":1,\"type\":\"video\"}]}")]
     [InlineData("\r\n  {\"tracks\":[{\"id\":1,\"type\":\"video\"}]}\r\n")]
+    [InlineData("\r\n\uFEFF  {\"tracks\":[{\"id\":1,\"type\":\"video\"}]}")]
     public void ParseVideoTrackId_SkipsAByteOrderMarkAndWhitespaceAheadOfTheDocument(string identify) =>
         Assert.Equal(1, FfmpegTranscodeEngine.ParseVideoTrackId(identify));
 

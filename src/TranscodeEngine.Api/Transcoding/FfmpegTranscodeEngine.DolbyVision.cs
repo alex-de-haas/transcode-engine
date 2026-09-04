@@ -221,7 +221,9 @@ public sealed partial class FfmpegTranscodeEngine
     {
         try
         {
-            using var document = JsonDocument.Parse(identifyJson.AsMemory().TrimStart('\uFEFF').Trim());
+            // Whitespace, then a byte-order mark, then whitespace again: a tool that prints a blank line before
+            // the mark is as plausible as one that prints the mark first, and the mark is not whitespace to Trim.
+            using var document = JsonDocument.Parse(identifyJson.AsMemory().Trim().TrimStart('\uFEFF').Trim());
             if (!document.RootElement.TryGetProperty("tracks", out var tracks) || tracks.ValueKind != JsonValueKind.Array)
             {
                 return null;
