@@ -205,15 +205,64 @@ public sealed partial class FfmpegTranscodeEngine
     /// every platform — and .NET's default for a redirected pipe on Windows is the console's own code page,
     /// under which a UTF-8 document is mojibake and its byte-order mark three stray characters. Said once
     /// here so every process this runner starts reads the same way.</summary>
-    private static readonly Encoding ToolOutput = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+    internal static readonly Encoding ToolOutput = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
 
-    /// <summary><c>mkvmerge --identification-format json --identify input</c>. Nothing else: in identification
-    /// mode mkvmerge takes the first argument that is not one of the identify options as the file name and
-    /// refuses a second, so a general option such as <c>--no-bom</c> here is read as the file and the real
-    /// path is "not allowed in identification mode". A byte-order mark, should one arrive, is the parser's to
-    /// skip.</summary>
+    /// <summary>
+    /// A process start for one of the tools, with everything they have in common: both pipes redirected and
+    /// read as UTF-8, and — where the environment names no UTF-8 locale — one set for the child. MKVToolNix
+    /// converts both its arguments and its output through the locale's character set, so a service started
+    /// without one (Hosty Core in WSL, where a real job failed) has mkvmerge stop its identification dead at
+    /// the first non-ASCII character of a track name and would mangle a non-ASCII path on the way in.
+    /// </summary>
+    internal static ProcessStartInfo ToolProcess(string executable)
+    {
+        var psi = new ProcessStartInfo(executable)
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = ToolOutput,
+            StandardErrorEncoding = ToolOutput,
+            UseShellExecute = false,
+        };
+
+        if (LocaleOverride(psi.Environment, OperatingSystem.IsLinux(), OperatingSystem.IsMacOS()) is { } locale)
+        {
+            psi.Environment["LC_ALL"] = locale;
+        }
+
+        return psi;
+    }
+
+    /// <summary>
+    /// The <c>LC_ALL</c> a tool is given, or null to leave the inherited environment alone. Set only when none
+    /// of <c>LC_ALL</c>, <c>LC_CTYPE</c>, <c>LANG</c> already names a UTF-8 locale — an operator's own
+    /// <c>en_US.UTF-8</c> is respected — and only to a name the platform is sure to have: <c>C.UTF-8</c> on
+    /// Linux, <c>en_US.UTF-8</c> on macOS (which has no <c>C.UTF-8</c>, and a name setlocale rejects would
+    /// fall back to plain C, the very thing being avoided). Windows tools do not read these.
+    /// </summary>
+    internal static string? LocaleOverride(IDictionary<string, string?> environment, bool isLinux, bool isMacOS)
+    {
+        foreach (var name in new[] { "LC_ALL", "LC_CTYPE", "LANG" })
+        {
+            if (environment.TryGetValue(name, out var value) && value is { Length: > 0 } &&
+                (value.Contains("UTF-8", StringComparison.OrdinalIgnoreCase) || value.Contains("UTF8", StringComparison.OrdinalIgnoreCase)))
+            {
+                return null;
+            }
+        }
+
+        return isLinux ? "C.UTF-8" : isMacOS ? "en_US.UTF-8" : null;
+    }
+
+    /// <summary><c>mkvmerge --output-charset UTF-8 --identification-format json --identify input</c>. The
+    /// charset is one of the options MKVToolNix strips before any program-specific parsing, so it is allowed
+    /// where a general option is not: in identification mode mkvmerge takes the first argument that is not an
+    /// identify option as the file name and refuses a second, which is how <c>--no-bom</c> once made the real
+    /// path "not allowed in identification mode". Asking for UTF-8 here says so even when the locale
+    /// override could not take (an unknown locale name falls back to C); a byte-order mark, should one
+    /// arrive, is the parser's to skip.</summary>
     internal static List<string> BuildIdentifyArguments(string inputPath) =>
-        ["--identification-format", "json", "--identify", inputPath];
+        ["--output-charset", "UTF-8", "--identification-format", "json", "--identify", inputPath];
 
     /// <summary>The id of the first video track in <c>mkvmerge --identify</c>'s JSON, which is what mkvextract
     /// addresses tracks by. ffprobe's stream index is not the same numbering — attachments are streams to
@@ -227,7 +276,10 @@ public sealed partial class FfmpegTranscodeEngine
             // Whitespace, then a byte-order mark, then whitespace again: a tool that prints a blank line before
             // the mark is as plausible as one that prints the mark first, and the mark is not whitespace to Trim.
             using var document = JsonDocument.Parse(identifyJson.AsMemory().Trim().TrimStart('\uFEFF').Trim());
-            if (!document.RootElement.TryGetProperty("tracks", out var tracks) || tracks.ValueKind != JsonValueKind.Array)
+            // TryGetProperty throws on anything but an object, and a document that is valid JSON of the wrong
+            // shape must read as "no track", not as an error in the reader.
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("tracks", out var tracks) || tracks.ValueKind != JsonValueKind.Array)
             {
                 return null;
             }
@@ -313,7 +365,7 @@ public sealed partial class FfmpegTranscodeEngine
             if (TracksStageMapsAnything(request, await ProbeStreamsAsync(request.InputPath, cancellationToken)))
             {
                 tracks = temps.Tracks;
-                var compose = new ProcessStartInfo(_settings.FfmpegPath);
+                var compose = ToolProcess(_settings.FfmpegPath);
                 foreach (var arg in BuildArguments(job, hardware, [tracks]))
                 {
                     compose.ArgumentList.Add(arg);
@@ -331,7 +383,7 @@ public sealed partial class FfmpegTranscodeEngine
             }
 
             // 2. The source's base and enhancement layer, as one elementary stream.
-            var extract = new ProcessStartInfo(_settings.MkvextractPath);
+            var extract = ToolProcess(_settings.MkvextractPath);
             foreach (var arg in BuildMkvextractArguments(request.InputPath, trackId.Value, temps.SourceLayers))
             {
                 extract.ArgumentList.Add(arg);
@@ -345,7 +397,7 @@ public sealed partial class FfmpegTranscodeEngine
             }
 
             // 3. The RPU rewritten to profile 8.1, the enhancement layer gone; the base layer copied.
-            var convert = new ProcessStartInfo(_settings.DoviToolPath);
+            var convert = ToolProcess(_settings.DoviToolPath);
             foreach (var arg in BuildDoviToolArguments(temps.SourceLayers, temps.ConvertedLayer))
             {
                 convert.ArgumentList.Add(arg);
@@ -363,7 +415,7 @@ public sealed partial class FfmpegTranscodeEngine
 
             // 4. The output, assembled by mkvmerge. Exit code 1 is "finished with warnings" and still wrote
             // the file; only 2 is an error.
-            var mux = new ProcessStartInfo(_settings.MkvmergePath);
+            var mux = ToolProcess(_settings.MkvmergePath);
             foreach (var arg in BuildMkvmergeArguments(finalTemp, temps.ConvertedLayer, tracks, job.Source))
             {
                 mux.ArgumentList.Add(arg);
@@ -443,12 +495,7 @@ public sealed partial class FfmpegTranscodeEngine
             return false;
         }
 
-        psi.RedirectStandardOutput = true;
-        psi.RedirectStandardError = true;
-        psi.StandardOutputEncoding = ToolOutput;
-        psi.StandardErrorEncoding = ToolOutput;
-        psi.UseShellExecute = false;
-
+        // The caller built psi with ToolProcess, so the pipes, their encoding and the locale are already set.
         using var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
         using var watchdog = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var exited = new CancellationTokenSource();
@@ -610,6 +657,35 @@ public sealed partial class FfmpegTranscodeEngine
         _logger.LogWarning("Job {JobId} failed: {Reason} {Tail}", job.JobId, reason, stderrTail.Text);
     }
 
+    /// <summary>The tracks an identification names, as <c>id:type</c> pairs — what a log needs when none of them
+    /// was the video: whether the document was readable at all, whether it had a tracks array, and what the
+    /// entries were called.</summary>
+    internal static string DescribeTracks(string identifyJson)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(identifyJson.AsMemory().Trim().TrimStart('\uFEFF').Trim());
+            // The same guards as the parser: valid JSON of the wrong shape is described, not thrown on — this is
+            // the diagnostic path, and a diagnostic that crashes has explained nothing.
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("tracks", out var tracks) || tracks.ValueKind != JsonValueKind.Array)
+            {
+                return "(no tracks array)";
+            }
+
+            var described = tracks.EnumerateArray()
+                .Select(track => track.ValueKind == JsonValueKind.Object
+                    ? $"{(track.TryGetProperty("id", out var id) ? id.ToString() : "?")}:{(track.TryGetProperty("type", out var type) ? type.ToString() : "?")}"
+                    : "?:?")
+                .ToList();
+            return described.Count == 0 ? "(empty)" : string.Join(", ", described);
+        }
+        catch (JsonException exception)
+        {
+            return $"(unreadable: {exception.Message})";
+        }
+    }
+
     /// <summary>The first few hundred characters of a tool's output, enough to see what went wrong without
     /// putting a whole identification into one log line.</summary>
     private static string Head(string? text) =>
@@ -624,14 +700,7 @@ public sealed partial class FfmpegTranscodeEngine
         timeoutCts.CancelAfter(IdentifyTimeout);
         try
         {
-            var psi = new ProcessStartInfo(_settings.MkvmergePath)
-            {
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                StandardOutputEncoding = ToolOutput,
-                StandardErrorEncoding = ToolOutput,
-                UseShellExecute = false,
-            };
+            var psi = ToolProcess(_settings.MkvmergePath);
             foreach (var arg in BuildIdentifyArguments(inputPath))
             {
                 psi.ArgumentList.Add(arg);
@@ -654,10 +723,12 @@ public sealed partial class FfmpegTranscodeEngine
                 if (trackId is null)
                 {
                     // The one answer that used to be silent: what mkvmerge actually said, so the next failure
-                    // of this kind is diagnosable from the log rather than reproduced by hand on the host.
+                    // of this kind is diagnosable from the log rather than reproduced by hand on the host. The
+                    // tracks are summarised rather than the document's head quoted — a real failure's head was
+                    // all attachments and chapters, and the part that mattered was past the cut.
                     _logger.LogWarning(
-                        "mkvmerge --identify found no video track in {Input} (exit {Code}). stdout: {Stdout} stderr: {Stderr}",
-                        inputPath, process.ExitCode, Head(stdout), Head(errors));
+                        "mkvmerge --identify found no video track in {Input} (exit {Code}, {Length} chars). tracks: {Tracks} stderr: {Stderr}",
+                        inputPath, process.ExitCode, stdout.Length, DescribeTracks(stdout), Head(errors));
                 }
 
                 return trackId;
