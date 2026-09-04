@@ -34,10 +34,10 @@ whatever is asked — set `videoCodec: copy`, or leave a merge's codec unnamed),
 extraction, when the input or the output is not `.mkv`, or when the tools are not in the
 image. The engine then refuses an input whose video is not profile 7 — a profile 8 is
 already what the conversion produces, a profile 5 has nothing to fall back on, and a stream
-without a record has no Dolby Vision — from the same probe it already runs at create time,
-as the same `400`. An input that probe could not read is let through: the check after the
-last stage decides, which degrades like every other probe here rather than refusing over a
-timeout.
+without a record has no Dolby Vision, and a file without a video stream has nothing to
+convert — from the same probe it already runs at create time, as the same `400`. An input
+that probe could not read at all is let through: the check after the last stage decides,
+which degrades like every other probe here rather than refusing over a timeout.
 
 Everything else about the job is unchanged: audio and subtitle selection, defaults,
 merged inputs, audio targets and metadata overrides all apply, and the output is published
@@ -118,8 +118,8 @@ Backend tests use xUnit and Imposter; no process ever starts.
   the argument builders for `mkvextract`, `dovi_tool` and `mkvmerge` (default duration,
   language and title present and omitted, the video first); the first video track taken
   from `mkvmerge --identify` and null without one or without a document; the create-time
-  refusal of profile 8, profile 5 and a recordless stream by name, profile 7 accepted, and
-  an unreadable input let through; the output check accepting only profile 8 with
+  refusal of profile 8, profile 5, a recordless stream and a video-less input by name,
+  profile 7 accepted, and an unreadable input let through; the output check accepting only profile 8 with
   compatibility id 1; the free-space rule needing twice the input and only when both
   figures are known; the stage-to-percentage mapping and its clamp; the intermediates'
   names beside the output; `ParseSourceProbe` reading the record, the frame rate and the

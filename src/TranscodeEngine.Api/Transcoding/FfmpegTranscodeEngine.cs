@@ -1323,7 +1323,14 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
         string? VideoFrameRate = null,
         string? VideoLanguage = null,
         string? VideoTitle = null,
-        DolbyVisionRecord? DolbyVision = null);
+        DolbyVisionRecord? DolbyVision = null,
+        bool HasVideoStream = false)
+    {
+        /// <summary>Whether ffprobe answered at all. A probe that timed out or could not read the file
+        /// reports nothing, and a check that cannot be made must not fail a job; a probe that answered and
+        /// found no video is a different thing, and says so.</summary>
+        public bool Probed => DurationSeconds is not null || HasVideoStream;
+    }
 
     /// <summary>A stream's Dolby Vision configuration record as ffprobe reports it: profile, level, the
     /// layer flags and the base-layer compatibility id (1 is the HDR10 of profile 8.1; 6 the HDR10 a UHD
@@ -1361,7 +1368,7 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
                 // video track from an elementary stream that carries none of them.
                 "-select_streams", "v:0",
                 "-show_entries",
-                "format=duration:stream=pix_fmt,r_frame_rate:stream_tags=language,title:" +
+                "format=duration:stream=codec_type,pix_fmt,r_frame_rate:stream_tags=language,title:" +
                 "stream_side_data=dv_profile,dv_level,rpu_present_flag,el_present_flag,bl_present_flag,dv_bl_signal_compatibility_id",
                 // Keys are kept (no nokey=1): the entries live in different sections, so the output is parsed
                 // by name rather than by line order. Tags arrive as TAG:language=...; side data keys as they are.
@@ -1422,6 +1429,7 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
         var rpu = false;
         var el = false;
         var bl = false;
+        var hasVideo = false;
         foreach (var line in stdout.Split('\n'))
         {
             var separator = line.IndexOf('=');
@@ -1439,6 +1447,11 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
                     break;
                 case "pix_fmt" when value.Length > 0 && value != "unknown":
                     pixelFormat = value;
+                    break;
+                // Printed only when v:0 exists: -select_streams v:0 leaves an audio-only file with no stream
+                // section at all, which is how "no video" is told from "could not read".
+                case "codec_type":
+                    hasVideo = value == "video";
                     break;
                 // 0/0 is ffprobe's "unknown" rational, and no use as a default duration.
                 case "r_frame_rate" when value.Length > 0 && value != "0/0":
@@ -1477,7 +1490,8 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
             frameRate,
             language,
             title,
-            dvProfile is { } dv ? new DolbyVisionRecord(dv, dvLevel, dvCompatibility, rpu, el, bl) : null);
+            dvProfile is { } dv ? new DolbyVisionRecord(dv, dvLevel, dvCompatibility, rpu, el, bl) : null,
+            hasVideo);
     }
 
     /// <summary>

@@ -53,15 +53,21 @@ public sealed partial class FfmpegTranscodeEngine
     /// <summary>
     /// Whether the input can be converted at all, from its create-time probe. Only a dual-layer profile 7
     /// has anything to rewrite; a profile 8 is already what the conversion produces, a profile 5 has no
-    /// HDR10 base layer to fall back on, and a stream without a record has no Dolby Vision. An input the
-    /// probe could not read passes: the check after the last stage catches a result that is not profile 8.1,
-    /// and degrading like every other probe here beats refusing a job over a probe that timed out.
+    /// HDR10 base layer to fall back on, a stream without a record has no Dolby Vision, and a file without
+    /// a video stream has nothing to convert. An input the probe could not read at all passes: the check
+    /// after the last stage catches a result that is not profile 8.1, and degrading like every other probe
+    /// here beats refusing a job over a probe that timed out.
     /// </summary>
     internal static string? DolbyVisionConversionError(SourceProbe source)
     {
-        if (source.VideoPixelFormat is null)
+        if (!source.Probed)
         {
             return null;
+        }
+
+        if (!source.HasVideoStream)
+        {
+            return "the input has no video stream to convert.";
         }
 
         if (source.DolbyVision is not { } record)

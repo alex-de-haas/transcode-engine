@@ -30,12 +30,14 @@ public sealed class DolbyVisionConversionTests
         string? pixelFormat = "yuv420p10le",
         string? frameRate = "24000/1001",
         string? language = "eng",
-        string? title = null) =>
+        string? title = null,
+        bool hasVideo = true) =>
         new(
             7506.291, pixelFormat, frameRate, language, title,
             profile is { } value
                 ? new FfmpegTranscodeEngine.DolbyVisionRecord(value, 6, compatibility, RpuPresent: true, enhancementLayer, BlPresent: true)
-                : null);
+                : null,
+            hasVideo);
 
     private static IEnumerable<string> MapTargets(List<string> args)
     {
@@ -180,9 +182,20 @@ public sealed class DolbyVisionConversionTests
     [Fact]
     public void ConversionError_PassesAnInputTheProbeCouldNotRead()
     {
-        // A probe that timed out reports nothing about the video at all. The job runs and the output check
-        // decides, which degrades like every other probe here rather than refusing over a timeout.
-        Assert.Null(FfmpegTranscodeEngine.DolbyVisionConversionError(Probe(profile: null, pixelFormat: null)));
+        // A probe that timed out reports nothing at all. The job runs and the output check decides, which
+        // degrades like every other probe here rather than refusing over a timeout.
+        Assert.False(default(FfmpegTranscodeEngine.SourceProbe).Probed);
+        Assert.Null(FfmpegTranscodeEngine.DolbyVisionConversionError(default));
+    }
+
+    [Fact]
+    public void ConversionError_RefusesAnInputWithoutAVideoStream()
+    {
+        // A probe that answered — there is a duration — and found no video is not an unreadable input: it
+        // is a file with nothing to convert, refused here rather than three stages later at mkvmerge.
+        var audioOnly = new FfmpegTranscodeEngine.SourceProbe(7506.291, null);
+        Assert.True(audioOnly.Probed);
+        Assert.Contains("no video stream", FfmpegTranscodeEngine.DolbyVisionConversionError(audioOnly));
     }
 
     [Fact]
@@ -228,6 +241,7 @@ public sealed class DolbyVisionConversionTests
     {
         const string Stdout = """
             duration=7506.291000
+            codec_type=video
             pix_fmt=yuv420p10le
             r_frame_rate=24000/1001
             TAG:language=eng
@@ -242,6 +256,7 @@ public sealed class DolbyVisionConversionTests
         var probe = FfmpegTranscodeEngine.ParseSourceProbe(Stdout);
 
         Assert.Equal(7506.291, probe.DurationSeconds!.Value, 3);
+        Assert.True(probe.HasVideoStream);
         Assert.Equal("yuv420p10le", probe.VideoPixelFormat);
         Assert.Equal("24000/1001", probe.VideoFrameRate);
         Assert.Equal("eng", probe.VideoLanguage);
@@ -260,7 +275,7 @@ public sealed class DolbyVisionConversionTests
     public void ParseSourceProbe_WithoutARecordReportsNoDolbyVision()
     {
         // 0/0 is ffprobe's unknown rational and "und" its no-language; neither is a value to put back.
-        var probe = FfmpegTranscodeEngine.ParseSourceProbe("duration=1.0\npix_fmt=yuv420p\nr_frame_rate=0/0\nTAG:language=und\n");
+        var probe = FfmpegTranscodeEngine.ParseSourceProbe("duration=1.0\ncodec_type=video\npix_fmt=yuv420p\nr_frame_rate=0/0\nTAG:language=und\n");
 
         Assert.Null(probe.DolbyVision);
         Assert.Null(probe.VideoFrameRate);

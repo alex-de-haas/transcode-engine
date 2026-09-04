@@ -183,7 +183,7 @@ public static class TranscodeEndpoints
                     return Results.BadRequest(new { error = "dolbyVision 'toProfile81' writes Matroska: outputPath must end in .mkv." });
                 }
 
-                if (!request.InputPath.TrimEnd().EndsWith(".mkv", StringComparison.OrdinalIgnoreCase))
+                if (!request.InputPath.EndsWith(".mkv", StringComparison.OrdinalIgnoreCase))
                 {
                     return Results.BadRequest(new { error = "dolbyVision 'toProfile81' reads the enhancement layer out of a Matroska input: inputPath must be an .mkv." });
                 }
