@@ -65,17 +65,27 @@ four stages, each one process under the job's cancel and no-progress watchdog:
 2. **The layers.** `mkvextract input.mkv tracks ID:layers.hevc` writes the video track as an
    Annex B elementary stream with base and enhancement layer interleaved, which is how
    mkvextract writes a track carrying `BlockAdditions`. The track id comes from
-   `mkvmerge --identification-format json --identify`, not from ffprobe's stream index:
-   attachments are streams to ffprobe and not tracks to mkvmerge, so the two numberings can
-   differ. Those are the only arguments: in identification mode mkvmerge takes the first
-   argument that is not an identify option as the file name and refuses a second, so a
-   general option such as `--no-bom` in that position makes the real path "not allowed" —
-   which is how one real job failed. Every tool's output is read as UTF-8 whatever the
-   host's console code page (.NET's default on Windows is that code page), a byte-order
-   mark ahead of the document is skipped, and when no video track can be read the log
-   carries mkvmerge's exit code, the document's length, the tracks it named as `id:type`
-   pairs (or that it had none, or could not be read), and its stderr — so a failure here
-   is diagnosable from the log rather than reproduced by hand on the host.
+   `mkvmerge --output-charset UTF-8 --identification-format json --identify`, not from
+   ffprobe's stream index: attachments are streams to ffprobe and not tracks to mkvmerge,
+   so the two numberings can differ. Those are the only arguments: in identification mode
+   mkvmerge takes the first argument that is not an identify option as the file name and
+   refuses a second, so a general option such as `--no-bom` in that position makes the real
+   path "not allowed" — which is how one real job failed. `--output-charset` is the
+   exception, one of the options MKVToolNix strips before any program-specific parsing.
+
+   **Every tool runs with a UTF-8 locale.** MKVToolNix converts both its arguments and its
+   output through the locale's character set, so under a service started without one — Hosty
+   Core in WSL — mkvmerge's identification stopped dead at the first Cyrillic letter of a
+   track name, leaving a document cut mid-string that read as "no video track", and a
+   non-ASCII path would have been mangled on the way in. Unless `LC_ALL`, `LC_CTYPE` or
+   `LANG` already names a UTF-8 locale, the tools are started with `LC_ALL=C.UTF-8`
+   (`en_US.UTF-8` on macOS, which has no `C.UTF-8`); an operator's own UTF-8 locale is left
+   alone. Every tool's output is read as UTF-8 whatever the host's console code page
+   (.NET's default on Windows is that code page), a byte-order mark ahead of the document is
+   skipped, and when no video track can be read the log carries mkvmerge's exit code, the
+   document's length, the tracks it named as `id:type` pairs (or that it had none, or could
+   not be read), and its stderr — so a failure here is diagnosable from the log rather than
+   reproduced by hand on the host.
 3. **The rewrite.** `dovi_tool -m 2 convert --discard layers.hevc -o dv81.hevc` rewrites
    every RPU to profile 8.1 with base-layer compatibility id 1 and drops the enhancement
    layer; the base layer is copied. The source layers are deleted as soon as this stage
@@ -139,8 +149,9 @@ Backend tests use xUnit and Imposter; no process ever starts.
   from `mkvmerge --identify`, null without one or without a document, and found behind a
   byte-order mark or leading whitespace, and read out of a real mkvmerge v82 document kept
   verbatim; the tracks summary for a document with no video, with no tracks, with no
-  tracks array, and one that is not JSON; the identify arguments being the identify
-  options and the file alone; the create-time
+  tracks array, and one that is not JSON; the identify arguments being the charset, the identify
+  options and the file alone; the tool process reading both pipes as UTF-8; the locale
+  override set only where no UTF-8 locale is named, to the name each platform has; the create-time
   refusal of profile 8, profile 5, a recordless stream and a video-less input by name,
   profile 7 accepted, and an unreadable input let through; the output check accepting only profile 8 with
   compatibility id 1; the free-space rule needing twice the input and only when both

@@ -335,8 +335,46 @@ public sealed class DolbyVisionConversionTests
         // identification mode" because --no-bom stood where the file name was expected.
         var args = FfmpegTranscodeEngine.BuildIdentifyArguments("/in/movie.mkv");
 
-        Assert.Equal(["--identification-format", "json", "--identify", "/in/movie.mkv"], args);
+        // --output-charset is one of the options MKVToolNix strips before its own parsing, so it is the one
+        // general option that is allowed here — and it is what keeps a Cyrillic track name from ending the
+        // document mid-string under a locale that is not UTF-8.
+        Assert.Equal(["--output-charset", "UTF-8", "--identification-format", "json", "--identify", "/in/movie.mkv"], args);
         Assert.DoesNotContain("--no-bom", args);
+    }
+
+    [Fact]
+    public void ToolProcess_ReadsBothPipesAsUtf8()
+    {
+        var psi = FfmpegTranscodeEngine.ToolProcess("mkvmerge");
+
+        Assert.True(psi.RedirectStandardOutput);
+        Assert.True(psi.RedirectStandardError);
+        Assert.Same(FfmpegTranscodeEngine.ToolOutput, psi.StandardOutputEncoding);
+        Assert.Same(FfmpegTranscodeEngine.ToolOutput, psi.StandardErrorEncoding);
+        Assert.False(psi.UseShellExecute);
+    }
+
+    [Theory]
+    // No locale at all — a service started by an init system or by Core in WSL — gets one the platform has.
+    [InlineData(null, null, null, true, false, "C.UTF-8")]
+    [InlineData(null, null, null, false, true, "en_US.UTF-8")]
+    [InlineData(null, null, null, false, false, null)]
+    // A locale that is not UTF-8 is overridden: under it mkvmerge stops at the first non-ASCII character.
+    [InlineData("C", null, null, true, false, "C.UTF-8")]
+    [InlineData(null, null, "POSIX", true, false, "C.UTF-8")]
+    // An operator's own UTF-8 locale, under any of the three names and either spelling, is left alone.
+    [InlineData(null, null, "en_US.UTF-8", true, false, null)]
+    [InlineData(null, "ru_RU.utf8", null, true, false, null)]
+    [InlineData("C.UTF-8", null, null, false, true, null)]
+    public void LocaleOverride_SetsAUtf8LocaleOnlyWhereNoneIsNamed(
+        string? lcAll, string? lcCtype, string? lang, bool isLinux, bool isMacOS, string? expected)
+    {
+        var environment = new Dictionary<string, string?>();
+        if (lcAll is not null) environment["LC_ALL"] = lcAll;
+        if (lcCtype is not null) environment["LC_CTYPE"] = lcCtype;
+        if (lang is not null) environment["LANG"] = lang;
+
+        Assert.Equal(expected, FfmpegTranscodeEngine.LocaleOverride(environment, isLinux, isMacOS));
     }
 
     // ---- what may be converted, and what counts as converted ----
