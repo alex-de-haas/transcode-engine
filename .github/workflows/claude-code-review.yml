@@ -18,9 +18,15 @@ concurrency:
 jobs:
   review:
     name: review
-    # `opened` also fires for draft pull requests; those wait for `ready_for_review`.
-    if: github.event.pull_request.draft == false
+    # `opened` also fires for draft pull requests; those wait for `ready_for_review`. Pull requests
+    # from forks are skipped: GitHub withholds repository secrets from them, so the run could only
+    # fail for lack of a token.
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    # A read-only GITHUB_TOKEN is enough: the action posts its comments with a Claude GitHub App
+    # token that it obtains through OIDC (`id-token: write`), not with GITHUB_TOKEN.
     permissions:
       contents: read
       pull-requests: read
@@ -31,7 +37,7 @@ jobs:
         with:
           fetch-depth: 1
 
-      - uses: anthropics/claude-code-action@v1
+      - uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1.0.217
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           plugin_marketplaces: "https://github.com/anthropics/claude-code.git"
