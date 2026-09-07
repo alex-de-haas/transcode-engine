@@ -19,11 +19,13 @@ jobs:
   review:
     name: review
     # `opened` also fires for draft pull requests; those wait for `ready_for_review`. Pull requests
-    # from forks are skipped: GitHub withholds repository secrets from them, so the run could only
-    # fail for lack of a token.
+    # from forks and from bots such as Dependabot are skipped: GitHub withholds repository secrets
+    # from both, so the run could only fail for lack of a token, and the action rejects bot actors
+    # anyway.
     if: >-
       github.event.pull_request.draft == false &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.type != 'Bot'
     runs-on: ubuntu-latest
     # A read-only GITHUB_TOKEN is enough: the action posts its comments with a Claude GitHub App
     # token that it obtains through OIDC (`id-token: write`), not with GITHUB_TOKEN.
