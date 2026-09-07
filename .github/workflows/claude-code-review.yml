@@ -1,0 +1,44 @@
+name: Claude Code Review
+
+# Runs the Claude Code `code-review` plugin once per pull request: when it is opened as a non-draft,
+# or when a draft is marked ready for review. Later pushes to the branch do not re-run it: convert
+# the PR back to draft and mark it ready again to get a fresh review.
+#
+# Authenticates with a Claude subscription token (`claude setup-token`) stored in the
+# CLAUDE_CODE_OAUTH_TOKEN repository secret, so each run draws from that subscription's usage
+# window rather than API billing.
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: review
+    # `opened` also fires for draft pull requests; those wait for `ready_for_review`.
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          plugin_marketplaces: "https://github.com/anthropics/claude-code.git"
+          plugins: "code-review@claude-code-plugins"
+          # `--comment` posts one inline comment per finding, or a single summary comment when there
+          # are none. Without it the findings only appear in the workflow run log.
+          prompt: "/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
+          # The action starts the MCP server that posts inline comments only when `--allowedTools`
+          # names the tool here, even though the skill's own frontmatter already lists it.
+          claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment"'
