@@ -1,7 +1,7 @@
 # Build and Deployment
 
 Created: 2026-07-03
-Updated: 2026-09-07
+Updated: 2026-09-08
 
 ## Description
 
@@ -70,6 +70,14 @@ subscription token, and posts through a Claude GitHub App token obtained via OID
 workflow's own `GITHUB_TOKEN` stays read-only. The action refuses to run when the workflow
 file differs from the copy on `main`, so a PR that changes the workflow itself gets no
 review. The check is not required for merging.
+
+In the action's agent mode Claude starts with no tools beyond those the workflow names
+in `--allowedTools`, and the plugin's subagents read the pull request through `gh pr`,
+`gh api` and `gh search`, so the workflow grants those `gh` forms alongside the
+inline-comment tool. They run with the App token, which makes them more than read-only;
+the skip rules above bound that to human-authored pull requests from this repository.
+The step also sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`, so the subagents run in the
+foreground and the session cannot end before they report.
 
 ## Publishing (`.github/workflows/publish.yml`)
 
