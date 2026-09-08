@@ -53,13 +53,14 @@ jobs:
           # are none. Without it the findings only appear in the workflow run log.
           prompt: "/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
           # In agent mode the action grants no tools beyond this list, and the plugin's own
-          # frontmatter covers only a few `gh pr` / `gh issue` forms for the main agent. The
-          # subagents that do the actual review read the pull request through `gh pr`, `gh api`
-          # and `gh search` (read-only `git` is allowed by Claude Code itself), so without these
-          # grants every subagent is denied and the run ends green with nothing to post. `gh` runs
-          # with the Claude GitHub App token, so this is broader than read-only; the `if:` above
-          # limits the job to human-authored pull requests from this repository.
+          # frontmatter is not reliably applied to its subagents. The subagents that do the actual
+          # review read the pull request through the same `gh` forms the plugin declares for
+          # itself, so those are repeated here for them (read-only `git` is allowed by Claude Code
+          # itself); without the grants every subagent is denied and the run ends green with
+          # nothing to post. All of them are read-only except `gh pr comment`, which posts the
+          # summary when nothing is found. `gh api` is deliberately absent: it cannot be limited to
+          # GET, and the App token it would run with can write.
           # The inline-comment tool must be named here too: the action starts its MCP server only
           # when `--allowedTools` lists the tool, even though the skill's frontmatter already does.
           claude_args: >-
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr:*),Bash(gh api:*),Bash(gh search:*),Bash(gh issue:*)"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr list:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*)"
