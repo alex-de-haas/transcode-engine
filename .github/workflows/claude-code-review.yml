@@ -40,6 +40,11 @@ jobs:
           fetch-depth: 1
 
       - uses: anthropics/claude-code-action@9c5ddab2e6d17b83ea679153b31f1d5f023cf636 # v1.0.217
+        env:
+          # The plugin fans the review out to subagents, which Claude Code starts in the background;
+          # the print-mode session can then finish before they report. This keeps them in the
+          # foreground, so the main agent continues only once each result is in.
+          CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1"
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           plugin_marketplaces: "https://github.com/anthropics/claude-code.git"
@@ -47,6 +52,15 @@ jobs:
           # `--comment` posts one inline comment per finding, or a single summary comment when there
           # are none. Without it the findings only appear in the workflow run log.
           prompt: "/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
-          # The action starts the MCP server that posts inline comments only when `--allowedTools`
-          # names the tool here, even though the skill's own frontmatter already lists it.
-          claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment"'
+          # In agent mode the action grants no tools beyond this list, and the plugin's own
+          # frontmatter is not reliably applied to its subagents. The subagents that do the actual
+          # review read the pull request through the same `gh` forms the plugin declares for
+          # itself, so those are repeated here for them (read-only `git` is allowed by Claude Code
+          # itself); without the grants every subagent is denied and the run ends green with
+          # nothing to post. All of them are read-only except `gh pr comment`, which posts the
+          # summary when nothing is found. `gh api` is deliberately absent: it cannot be limited to
+          # GET, and the App token it would run with can write.
+          # The inline-comment tool must be named here too: the action starts its MCP server only
+          # when `--allowedTools` lists the tool, even though the skill's frontmatter already does.
+          claude_args: >-
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr list:*),Bash(gh pr comment:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*)"
