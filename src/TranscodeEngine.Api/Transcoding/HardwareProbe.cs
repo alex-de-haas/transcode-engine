@@ -20,7 +20,8 @@ public sealed record HardwareStatus(
     bool VideoToolboxAvailable,
     bool AmfAvailable,
     DateTimeOffset CheckedAt,
-    ToolingStatus? Tools = null);
+    ToolingStatus? Tools = null,
+    bool VideoPartJoining = true);
 
 /// <summary>Inspects the passed-through DRI devices to report VAAPI availability without spawning a process.</summary>
 public static class HardwareProbe

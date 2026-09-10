@@ -63,6 +63,11 @@ internal sealed class TranscodeJob
 
     public string JobId { get; }
 
+    public JoinMediaInfo[]? JoinParts { get; set; }
+    public string JoinListPath => Path.Combine(Path.GetTempPath(), $"join-{JobId}.ffconcat");
+    public string JoinMetadataPath => Path.Combine(Path.GetTempPath(), $"join-{JobId}.ffmetadata");
+    public string? Error { get; private set; }
+
     public TranscodeJobRequest Request { get; }
 
     /// <summary>Every file this job produces — one for a composed job, one per stream for an extraction.
@@ -181,10 +186,11 @@ internal sealed class TranscodeJob
         }
     }
 
-    public void Fail()
+    public void Fail(string? error = null)
     {
         lock (_gate)
         {
+            Error = error;
             _state = JobState.Failed;
             _completedAt = DateTimeOffset.UtcNow;
             _speed = 0;
@@ -320,7 +326,7 @@ internal sealed class TranscodeJob
                 Math.Round(_speed, 3),
                 _outputSize,
                 eta,
-                OutputPaths);
+                OutputPaths, Error);
         }
     }
 }
