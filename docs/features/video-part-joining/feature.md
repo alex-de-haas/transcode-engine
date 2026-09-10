@@ -15,7 +15,10 @@ paths and an output equal to an input are refused. Joining is separate from
 The client id becomes the engine job id. Repeating a request with the same id and
 paths returns the original job; changing its inputs or output under that id is
 refused. Admission checks competing writers, including ordinary conversion jobs.
-A file already present at the destination is not replaced.
+A file already present at the destination is not replaced. The engine also validates
+join paths, Matroska output and N-format UUID ids for direct callers. External probes
+run outside the admission gate; duplicate ids and output conflicts are checked again
+before insertion. A rejected queue admission removes its journal so a retry can enqueue.
 
 ## Media handling
 
@@ -36,7 +39,7 @@ second part shifted by the first part's duration. Matching font attachments are
 copied. No external sidecar files are implicitly added.
 
 The job copies streams to a hidden temporary Matroska file beside the destination,
-reports progress against the sum of both durations, and checks that neither input
+reports `effectiveHardware: "none"` and progress against the sum of both durations, and checks that neither input
 changed after inspection. Before publishing, the output is probed for its duration,
 track count/codecs/tags and chapter count. Publication refuses to overwrite an
 existing destination, even if a file appeared after admission. Failure and
@@ -60,6 +63,8 @@ job eviction; explicitly removing a job removes its journal.
   in both orders, frame and decoded audio equivalence, seeking across the boundary,
   shifted subtitles/chapters, normalized nonzero Matroska timestamps and attachment
   byte preservation; existing output and competing writer refusal, queued cancel,
-  completed-state restoration and interrupted-output cleanup.
+  completed-state restoration and interrupted-output cleanup; direct-call validation,
+  concurrent retries, slow-probe admission isolation, queue rejection recovery,
+  no-encoder reporting and cancellation without failure events.
 - Set `FFMPEG_PATH` and `FFPROBE_PATH` for real fixture tests. These are explicitly
   skipped when those binaries are not supplied; ordinary unit tests need no tools.

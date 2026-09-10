@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using TranscodeEngine.Api.Api;
 using TranscodeEngine.Api.Transcoding;
+using TranscodeEngine.Api.Realtime;
 
 namespace TranscodeEngine.Api.Tests;
 
@@ -39,8 +40,9 @@ public sealed class JoinEndpointTests
             builder.WebHost.UseTestServer();
             builder.Services.AddSingleton(engine.Instance());
             builder.Services.AddSingleton(new TranscodeEngineSettings { AppDataDir = root, MediaRoots = new Dictionary<string, string> { ["movies"] = root } });
+            builder.Services.AddSingleton<TranscodeEventStream>();
             await using var app = builder.Build();
-            JoinEndpoints.Map(app);
+            app.MapTranscodeEndpoints();
             await app.StartAsync();
             var id = Guid.NewGuid();
             var response = await app.GetTestClient().PostAsJsonAsync("/jobs/join", new JoinJobRequest(

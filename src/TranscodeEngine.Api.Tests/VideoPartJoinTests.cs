@@ -67,6 +67,159 @@ public sealed class VideoPartJoinTests : IDisposable
         }, engine.BuildArguments(job, TranscodeHardware.None, ["temporary.mkv"]));
     }
 
+    [Theory]
+    [InlineData("../escape")]
+    [InlineData("")]
+    [InlineData("00000000000000000000000000000000")]
+    [InlineData("not-a-uuid")]
+    public async Task CreateJoin_InvalidClientId_RefusesBeforeProbingOrWriting(string id)
+    {
+        using var engine = EngineWithoutProbe();
+        await Assert.ThrowsAsync<ArgumentException>(() => engine.CreateAsync(
+            Request("a.mkv", "b.mkv", "out.mkv") with { ClientJobId = id }, default));
+        Assert.Empty(engine.GetAllSnapshots());
+        Assert.Empty(Directory.GetFileSystemEntries(_root));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("out.mp4")]
+    [InlineData("a.mkv")]
+    public async Task CreateJoin_InvalidOutput_RefusesBeforeProbing(string? output)
+    {
+        using var engine = EngineWithoutProbe();
+        await Assert.ThrowsAsync<ArgumentException>(() => engine.CreateAsync(
+            Request("a.mkv", "b.mkv", "out.mkv") with { OutputPath = output }, default));
+        Assert.Empty(engine.GetAllSnapshots());
+    }
+
+    [Fact]
+    public async Task CreateJoin_DuplicatePaths_UsesFilesystemComparisonAndNormalizesPaths()
+    {
+        using var engine = EngineWithoutProbe();
+        await Assert.ThrowsAsync<ArgumentException>(() => engine.CreateAsync(Request("a.mkv", "./a.mkv", "out.mkv"), default));
+        if (!OperatingSystem.IsLinux())
+            await Assert.ThrowsAsync<ArgumentException>(() => engine.CreateAsync(Request("a.mkv", "A.mkv", "out.mkv"), default));
+    }
+
+    [Fact]
+    public void JoinSnapshot_ReportsNoEncoderWhenRunningAndCompleted()
+    {
+        var job = new TranscodeJob("join", Request("a.mkv", "b.mkv", "out.mkv"), 2);
+        job.Start(TranscodeHardware.None);
+        Assert.Equal("none", job.ToSnapshot().EffectiveHardware);
+        job.Complete(JobState.Completed);
+        Assert.Equal("none", job.ToSnapshot().EffectiveHardware);
+    }
+
+    private FfmpegTranscodeEngine EngineWithoutProbe() => new(new()
+    {
+        AppDataDir = _root, MediaRoots = new Dictionary<string, string>(),
+        FfprobePath = Path.Combine(_root, "missing-ffprobe"),
+    }, NullLogger<FfmpegTranscodeEngine>.Instance);
+
+    [JoinFfmpegFact]
+    public async Task CreateJoin_RejectedQueueAdmission_LeavesNoJournalAndCanRetrySameId()
+    {
+        var first = await Part("a.mkv", "red", "A", "1");
+        var second = await Part("b.mkv", "blue", "B", "1");
+        var settings = new TranscodeEngineSettings { AppDataDir = _root, MediaRoots = new Dictionary<string, string>(),
+            FfmpegPath = Ffmpeg, FfprobePath = Ffprobe };
+        var request = Request(first, second, Path.Combine(_root, "out.mkv"));
+        using (var stopped = new FfmpegTranscodeEngine(settings, NullLogger<FfmpegTranscodeEngine>.Instance))
+        {
+            await stopped.StopAsync(default);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => stopped.CreateAsync(request, default));
+            Assert.Empty(stopped.GetAllSnapshots());
+            Assert.Empty(Directory.GetFiles(Path.Combine(_root, "join-jobs")));
+        }
+        using var retry = new FfmpegTranscodeEngine(settings, NullLogger<FfmpegTranscodeEngine>.Instance);
+        var descriptor = await retry.CreateAsync(request, default);
+        Assert.Equal(request.ClientJobId, descriptor.JobId);
+        Assert.Equal("Queued", retry.GetSnapshot(descriptor.JobId)!.State);
+    }
+
+    [JoinFfmpegFact]
+    public async Task CreateJoin_ConcurrentRetries_EnqueueOnlyOneJob()
+    {
+        var first = await Part("a.mkv", "red", "A", "1");
+        var second = await Part("b.mkv", "blue", "B", "1");
+        using var engine = new FfmpegTranscodeEngine(new() { AppDataDir = _root, MediaRoots = new Dictionary<string, string>(),
+            FfmpegPath = Ffmpeg, FfprobePath = Ffprobe }, NullLogger<FfmpegTranscodeEngine>.Instance);
+        var request = Request(first, second, Path.Combine(_root, "out.mkv"));
+        var responses = await Task.WhenAll(engine.CreateAsync(request, default), engine.CreateAsync(request, default));
+        Assert.Equal(responses[0].JobId, responses[1].JobId);
+        Assert.Single(engine.GetAllSnapshots());
+        Assert.Single(Directory.GetFiles(Path.Combine(_root, "join-jobs"), "*.json"));
+    }
+
+    [JoinFfmpegFact]
+    public async Task Join_CancelledDuringPreparation_DoesNotEmitFailure()
+    {
+        var first = await Part("a.mkv", "red", "A", "1");
+        var second = await Part("b.mkv", "blue", "B", "1");
+        using var engine = new FfmpegTranscodeEngine(new() { AppDataDir = _root, MediaRoots = new Dictionary<string, string>(),
+            FfmpegPath = Ffmpeg, FfprobePath = Ffprobe }, NullLogger<FfmpegTranscodeEngine>.Instance);
+        var failures = 0;
+        engine.JobFailed += (_, _) => Interlocked.Increment(ref failures);
+        engine.JobStarted += (_, id) =>
+        {
+            engine.CancelAsync(id, default).GetAwaiter().GetResult();
+            // Simulate a source changing just as cancellation arrives, forcing the preparation catch.
+            File.AppendAllText(first, "changed after admission");
+        };
+        var descriptor = await engine.CreateAsync(Request(first, second, Path.Combine(_root, "out.mkv")), default);
+        await engine.StartAsync(default);
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            while (engine.GetSnapshot(descriptor.JobId)?.State is "Queued" or "Running")
+                await Task.Delay(20, timeout.Token);
+            Assert.Equal("Cancelled", engine.GetSnapshot(descriptor.JobId)!.State);
+        }
+        finally { await engine.StopAsync(default); }
+        Assert.Equal(0, failures);
+        Assert.False(File.Exists(Path.Combine(_root, "out.mkv")));
+    }
+
+    [JoinFfmpegFact]
+    public async Task CreateJoin_SlowProbe_DoesNotBlockUnrelatedJoinOrConversion()
+    {
+        if (OperatingSystem.IsWindows()) return; // The controllable probe wrapper uses a POSIX shell.
+        var first = await Part("slow.mkv", "red", "A", "1");
+        var second = await Part("b.mkv", "blue", "B", "1");
+        var fast = Path.Combine(_root, "fast.mkv");
+        File.Copy(first, fast);
+        var marker = Path.Combine(_root, "probing");
+        var release = Path.Combine(_root, "release");
+        var wrapper = Path.Combine(_root, "ffprobe-wrapper");
+        static string Quote(string value) => "'" + value.Replace("'", "'\\''") + "'";
+        await File.WriteAllTextAsync(wrapper, $"#!/bin/sh\nfor arg do last=$arg; done\n" +
+            $"if [ \"$last\" = {Quote(first)} ]; then\n touch {Quote(marker)}\n" +
+            $" while [ ! -f {Quote(release)} ]; do sleep 0.05; done\nfi\nexec {Quote(Ffprobe)} \"$@\"\n");
+        File.SetUnixFileMode(wrapper, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        using var engine = new FfmpegTranscodeEngine(new() { AppDataDir = _root, MediaRoots = new Dictionary<string, string>(),
+            FfmpegPath = Ffmpeg, FfprobePath = wrapper }, NullLogger<FfmpegTranscodeEngine>.Instance);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var slow = engine.CreateAsync(Request(first, second, Path.Combine(_root, "slow-out.mkv")), timeout.Token);
+        try
+        {
+            while (!File.Exists(marker)) await Task.Delay(20, timeout.Token);
+            await engine.CreateAsync(Request(fast, second, Path.Combine(_root, "fast-out.mkv")), timeout.Token);
+            await engine.CreateAsync(new(second, Path.Combine(_root, "conversion.mkv"),
+                TranscodeVideoCodec.H264, TranscodeHardware.None, null), timeout.Token);
+            Assert.False(slow.IsCompleted);
+        }
+        finally
+        {
+            await File.WriteAllTextAsync(release, "release");
+            await slow;
+        }
+        Assert.Equal(3, engine.GetAllSnapshots().Count);
+    }
+
     [JoinFfmpegFact]
     public async Task Join_CopiesBothPartsInOrder_PreservesSubtitlesChaptersAndOriginals_AndSupportsSeek()
     {

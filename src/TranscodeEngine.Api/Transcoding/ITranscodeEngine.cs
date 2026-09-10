@@ -138,10 +138,10 @@ public sealed record TranscodeJobRequest(
     IReadOnlyList<string>? JoinPaths = null,
     string? ClientJobId = null)
 {
-    /// <summary>Whether this job writes its input's streams out as separate files rather than composing one.</summary>
     /// <summary>Two video files played consecutively, in their declared order.</summary>
     public bool IsJoin => JoinPaths is { Count: > 0 };
 
+    /// <summary>Whether this job writes its input's streams out as separate files rather than composing one.</summary>
     public bool IsExtraction => Outputs is { Count: > 0 };
 
     /// <summary>Whether this job rewrites the picture's Dolby Vision to profile 8.1 on its way through. Such

@@ -114,30 +114,62 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
 
     public async Task<JobDescriptor> CreateAsync(TranscodeJobRequest request, CancellationToken cancellationToken)
     {
+        ValidateJoinRequest(request);
         await _creationGate.WaitAsync(cancellationToken);
         try
         {
-            if (request.IsJoin && request.ClientJobId is { } restoreId && !_jobs.ContainsKey(restoreId)) RestoreJoins(restoreId);
-            if (request.IsJoin && request.ClientJobId is { } key && _jobs.TryGetValue(key, out var previous))
-            {
-                if (previous.Request.OutputPath != request.OutputPath ||
-                    !(previous.Request.JoinPaths ?? []).SequenceEqual(request.JoinPaths!))
-                    throw new ArgumentException("This clientJobId already identifies a different join.");
-                return new JobDescriptor(key, request.InputPath, request.OutputPath,
-                    previous.JoinParts?.Sum(part => part.Duration), null, previous.OutputPaths);
-            }
-            var comparison = OperatingSystem.IsLinux() ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
-            if (_jobs.Values.Any(job => !job.IsTerminal && (job.Request.IsJoin || request.IsJoin) &&
-                job.OutputPaths.Intersect(request.OutputPaths, comparison).Any()))
-                throw new ArgumentException("Another job is already writing this output.");
-            return await CreateCoreAsync(request, cancellationToken);
+            if (FindExistingJoin(request) is { } previous) return previous;
+            RequireOutputAvailable(request);
         }
         finally { _creationGate.Release(); }
+
+        // Probing external files must not serialize unrelated submissions. Recheck admission after
+        // probing so concurrent retries and writers still insert at most one job for an id/output.
+        return await CreateCoreAsync(request, cancellationToken);
+    }
+
+    private static StringComparer PathComparer =>
+        OperatingSystem.IsLinux() ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
+
+    private static void ValidateJoinRequest(TranscodeJobRequest request)
+    {
+        if (!request.IsJoin) return;
+        if (request.JoinPaths!.Count != 2 || request.JoinPaths.Any(string.IsNullOrWhiteSpace) ||
+            request.JoinPaths.Select(Path.GetFullPath).Distinct(PathComparer).Count() != 2)
+            throw new ArgumentException("Choose two different video files.");
+        if (string.IsNullOrWhiteSpace(request.OutputPath) ||
+            !request.OutputPath.EndsWith(".mkv", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("A join requires a Matroska (.mkv) output.");
+        if (request.JoinPaths.Select(Path.GetFullPath).Contains(Path.GetFullPath(request.OutputPath), PathComparer))
+            throw new ArgumentException("Both inputs and the output must be different files.");
+        if (request.ClientJobId is { } id && (!Guid.TryParseExact(id, "N", out var guid) || guid == Guid.Empty))
+            throw new ArgumentException("clientJobId must be a nonempty UUID in N format.");
+    }
+
+    private JobDescriptor? FindExistingJoin(TranscodeJobRequest request)
+    {
+        if (!request.IsJoin || request.ClientJobId is not { } id) return null;
+        if (!_jobs.ContainsKey(id)) RestoreJoins(id);
+        if (!_jobs.TryGetValue(id, out var previous)) return null;
+        if (!previous.Request.IsJoin || !PathComparer.Equals(previous.Request.OutputPath, request.OutputPath) ||
+            !(previous.Request.JoinPaths ?? []).SequenceEqual(request.JoinPaths!, PathComparer))
+            throw new ArgumentException("This clientJobId already identifies a different join.");
+        return new JobDescriptor(id, request.InputPath, request.OutputPath,
+            previous.JoinParts?.Sum(part => part.Duration), null, previous.OutputPaths);
+    }
+
+    private void RequireOutputAvailable(TranscodeJobRequest request)
+    {
+        if (request.IsJoin && File.Exists(request.OutputPath))
+            throw new ArgumentException("The join output already exists; choose another filename.");
+        if (_jobs.Values.Any(job => !job.IsTerminal && (job.Request.IsJoin || request.IsJoin) &&
+            job.OutputPaths.Select(Path.GetFullPath).Intersect(request.OutputPaths.Select(Path.GetFullPath), PathComparer).Any()))
+            throw new ArgumentException("Another job is already writing this output.");
     }
 
     private async Task<JobDescriptor> CreateCoreAsync(TranscodeJobRequest request, CancellationToken cancellationToken)
     {
-        var source = await ProbeSourceAsync(request.InputPath, cancellationToken);
+        var source = request.IsJoin ? default : await ProbeSourceAsync(request.InputPath, cancellationToken);
         var duration = source.DurationSeconds;
         var inputSize = TryFileLength(request.InputPath);
 
@@ -166,11 +198,7 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
         JoinMediaInfo[]? joinParts = null;
         if (request.IsJoin)
         {
-            if (request.JoinPaths!.Count != 2 || request.JoinPaths.Distinct().Count() != 2)
-                throw new ArgumentException("Choose two different video files.");
-            if (File.Exists(request.OutputPath))
-                throw new ArgumentException("The join output already exists; choose another filename.");
-            joinParts = [await ProbeJoinAsync(request.JoinPaths[0], cancellationToken),
+            joinParts = [await ProbeJoinAsync(request.JoinPaths![0], cancellationToken),
                          await ProbeJoinAsync(request.JoinPaths[1], cancellationToken)];
             JoinMediaInfo.Validate(joinParts[0], joinParts[1]);
             duration = joinParts.Sum(part => part.Duration);
@@ -178,17 +206,23 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
         }
         var jobId = request.IsJoin && request.ClientJobId is { } clientId ? clientId : Guid.NewGuid().ToString("n");
         var job = new TranscodeJob(jobId, request, duration, source.VideoPixelFormat, source) { JoinParts = joinParts };
-        SaveJoin(job);
-        _jobs[jobId] = job;
-
-        if (!_queue.Writer.TryWrite(jobId))
+        await _creationGate.WaitAsync(cancellationToken);
+        try
         {
-            _jobs.TryRemove(jobId, out _);
-            throw new InvalidOperationException(
-                "The transcode engine cannot accept the job (the queue is full or the engine is shutting down).");
+            if (FindExistingJoin(request) is { } previous) return previous;
+            RequireOutputAvailable(request);
+            SaveJoin(job);
+            _jobs[jobId] = job;
+            if (!_queue.Writer.TryWrite(jobId))
+            {
+                _jobs.TryRemove(jobId, out _);
+                if (request.IsJoin) File.Delete(JoinJournalPath(jobId));
+                throw new InvalidOperationException(
+                    "The transcode engine cannot accept the job (the queue is full or the engine is shutting down).");
+            }
+            return new JobDescriptor(jobId, request.InputPath, request.OutputPath, duration, inputSize, job.OutputPaths);
         }
-
-        return new JobDescriptor(jobId, request.InputPath, request.OutputPath, duration, inputSize, job.OutputPaths);
+        finally { _creationGate.Release(); }
     }
 
     public Task CancelAsync(string jobId, CancellationToken cancellationToken)
@@ -450,10 +484,17 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
         }
         catch (Exception exception)
         {
-            if (job.CancelRequested || cancellationToken.IsCancellationRequested) job.Complete(JobState.Cancelled);
-            else job.Fail(exception.Message);
-            JobFailed?.Invoke(this, job.JobId);
-            _logger.LogError(exception, "Job {JobId} errored. {Tail}", job.JobId, stderrTail.Text);
+            if (job.CancelRequested || cancellationToken.IsCancellationRequested)
+            {
+                job.Complete(JobState.Cancelled);
+                _logger.LogInformation("Job {JobId} cancelled.", job.JobId);
+            }
+            else
+            {
+                job.Fail(exception.Message);
+                JobFailed?.Invoke(this, job.JobId);
+                _logger.LogError(exception, "Job {JobId} errored. {Tail}", job.JobId, stderrTail.Text);
+            }
         }
         finally
         {
@@ -519,7 +560,7 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
-                job.Fail($"Could not publish the joined output: {exception.Message}");
+                job.Fail($"Could not publish the output: {exception.Message}");
                 JobFailed?.Invoke(this, job.JobId);
                 _logger.LogError(
                     exception,

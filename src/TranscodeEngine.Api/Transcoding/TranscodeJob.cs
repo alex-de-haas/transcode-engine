@@ -299,9 +299,9 @@ internal sealed class TranscodeJob
             }
 
             // The effective encoder family is only known once the worker has resolved it (after Start);
-            // a still-queued job reports null. An extraction reports "none" whatever the worker resolved:
+            // a still-queued job reports null. An extraction or join reports "none" whatever the worker resolved:
             // it runs no encoder at all, and "software" would claim a software encode that never happened.
-            var effectiveHardware = Request.IsExtraction ? "none" : _hardware switch
+            var effectiveHardware = Request.IsExtraction || Request.IsJoin ? "none" : _hardware switch
             {
                 TranscodeHardware.Vaapi => "vaapi",
                 TranscodeHardware.VideoToolbox => "videotoolbox",
