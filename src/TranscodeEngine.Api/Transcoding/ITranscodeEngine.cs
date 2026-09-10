@@ -134,8 +134,13 @@ public sealed record TranscodeJobRequest(
     IReadOnlyList<StreamMetadataOverride>? MetadataOverrides = null,
     IReadOnlyList<AudioTarget>? AudioTargets = null,
     IReadOnlyList<ExtractionOutput>? Outputs = null,
-    DolbyVisionMode DolbyVision = DolbyVisionMode.Keep)
+    DolbyVisionMode DolbyVision = DolbyVisionMode.Keep,
+    IReadOnlyList<string>? JoinPaths = null,
+    string? ClientJobId = null)
 {
+    /// <summary>Two video files played consecutively, in their declared order.</summary>
+    public bool IsJoin => JoinPaths is { Count: > 0 };
+
     /// <summary>Whether this job writes its input's streams out as separate files rather than composing one.</summary>
     public bool IsExtraction => Outputs is { Count: > 0 };
 
@@ -224,7 +229,8 @@ public sealed record JobSnapshot(
     double Speed,
     long OutputSizeBytes,
     double? EtaSeconds,
-    IReadOnlyList<string>? OutputPaths = null);
+    IReadOnlyList<string>? OutputPaths = null,
+    string? Error = null);
 
 /// <summary>
 /// Thin wrapper over ffmpeg. Owns no persistence; surfaces live snapshots and raises events for the

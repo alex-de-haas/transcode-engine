@@ -81,6 +81,7 @@ public sealed class ExtractJobPublishTests : IDisposable
         var published = engine.TryPublishOutputs(job, temps, outputs, new FfmpegTranscodeEngine.StderrTail());
 
         Assert.False(published);
+        Assert.StartsWith("Could not publish the output:", job.ToSnapshot().Error);
         Assert.Equal(JobState.Failed, job.State);
         Assert.Equal("job-1", failed);
         Assert.Equal("dub", File.ReadAllText(outputs[0]));
@@ -97,6 +98,7 @@ public sealed class ExtractJobPublishTests : IDisposable
         var published = Engine().TryPublishOutputs(job, temps, outputs, new FfmpegTranscodeEngine.StderrTail());
 
         Assert.False(published);
+        Assert.StartsWith("Could not publish the output:", job.ToSnapshot().Error);
         Assert.All(outputs, output => Assert.False(File.Exists(output)));
     }
 

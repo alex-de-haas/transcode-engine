@@ -63,6 +63,11 @@ internal sealed class TranscodeJob
 
     public string JobId { get; }
 
+    public JoinMediaInfo[]? JoinParts { get; set; }
+    public string JoinListPath => Path.Combine(Path.GetTempPath(), $"join-{JobId}.ffconcat");
+    public string JoinMetadataPath => Path.Combine(Path.GetTempPath(), $"join-{JobId}.ffmetadata");
+    public string? Error { get; private set; }
+
     public TranscodeJobRequest Request { get; }
 
     /// <summary>Every file this job produces — one for a composed job, one per stream for an extraction.
@@ -181,10 +186,11 @@ internal sealed class TranscodeJob
         }
     }
 
-    public void Fail()
+    public void Fail(string? error = null)
     {
         lock (_gate)
         {
+            Error = error;
             _state = JobState.Failed;
             _completedAt = DateTimeOffset.UtcNow;
             _speed = 0;
@@ -293,9 +299,9 @@ internal sealed class TranscodeJob
             }
 
             // The effective encoder family is only known once the worker has resolved it (after Start);
-            // a still-queued job reports null. An extraction reports "none" whatever the worker resolved:
+            // a still-queued job reports null. An extraction or join reports "none" whatever the worker resolved:
             // it runs no encoder at all, and "software" would claim a software encode that never happened.
-            var effectiveHardware = Request.IsExtraction ? "none" : _hardware switch
+            var effectiveHardware = Request.IsExtraction || Request.IsJoin ? "none" : _hardware switch
             {
                 TranscodeHardware.Vaapi => "vaapi",
                 TranscodeHardware.VideoToolbox => "videotoolbox",
@@ -320,7 +326,7 @@ internal sealed class TranscodeJob
                 Math.Round(_speed, 3),
                 _outputSize,
                 eta,
-                OutputPaths);
+                OutputPaths, Error);
         }
     }
 }
