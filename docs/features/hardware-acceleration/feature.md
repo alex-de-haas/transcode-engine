@@ -1,7 +1,7 @@
 # Hardware Acceleration
 
 Created: 2026-07-03
-Updated: 2026-08-06
+Updated: 2026-09-17
 
 ## Description
 
@@ -28,7 +28,7 @@ hardware is really in effect.
 | **AMF** (AMD, Windows) | `local` (native) | The engine runs natively on Windows; the host's `ffmpeg` hardware-decodes on the AMD VCN via D3D11VA and encodes with `*_amf`. The path for AMD on Windows, where VAAPI does not exist. |
 | **Software** (libx264 / libx265) | `docker` (default), or any fallback | No hardware needed. Starts on any host, including macOS Docker Desktop. |
 
-See [Hosty runtime app](../hosty-runtime-app.md#runtime-profiles) for the profiles and
+See [Hosty runtime app](../hosty-runtime-app/feature.md#runtime-profiles) for the profiles and
 [Build and deployment](../build-and-deployment/feature.md#running-under-each-runtime) for how to
 launch each.
 

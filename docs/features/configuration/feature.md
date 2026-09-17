@@ -1,7 +1,7 @@
 # Configuration
 
 Created: 2026-07-03
-Updated: 2026-09-04
+Updated: 2026-09-17
 
 ## Description
 
@@ -20,7 +20,7 @@ Set by Core, not by the operator:
 | `HOSTY_APP_DATA_DIR` | engine | App data / scratch dir; the standalone fallback media root lives under `media/`. Falls back to `{contentRoot}/data` when unset. |
 | `HOSTY_MOUNT_MEDIA` | engine | Comma-joined `label=path` media mounts, parsed into the label→root map. See [Media mounts](../media-mounts.md). |
 | `HOSTY_PORT_CONTROL` | Program.cs | Loopback control port under the `local` (localCommand) runtime; the app binds exactly this. Ignored in the container. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` (+ other `OTEL_*`) | engine | Presence switches on OTLP export; absence = no telemetry. See [Hosty runtime app](../hosty-runtime-app.md#telemetry). |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` (+ other `OTEL_*`) | engine | Presence switches on OTLP export; absence = no telemetry. See [Hosty runtime app](../hosty-runtime-app/feature.md#telemetry). |
 | `DOTNET_RUNNING_IN_CONTAINER` | Program.cs | Set by the docker image; when `true`, Kestrel's default binding (`ASPNETCORE_URLS`) is used instead of `HOSTY_PORT_CONTROL`. |
 | `ASPNETCORE_URLS` | container | Container listen URL (`http://+:8080`), set by the image. |
 

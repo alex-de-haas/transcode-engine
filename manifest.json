@@ -3,7 +3,7 @@
   "id": "com.haas.transcode-engine",
   "name": "Transcode Engine",
   "description": "ffmpeg-backed batch transcoder with VAAPI/VideoToolbox hardware acceleration and an HTTP/SSE control API, for other Hosty apps to drive re-encoding jobs over a dependency.",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "source": {
     "type": "git",
     "repository": "https://github.com/alex-de-haas/transcode-engine.git",
@@ -12,7 +12,8 @@
   "runtimeProfiles": [
     { "key": "docker", "type": "docker", "default": true },
     { "key": "docker-vaapi", "type": "docker" },
-    { "key": "local", "type": "localCommand" }
+    { "key": "local", "type": "localCommand" },
+    { "key": "dev", "type": "localCommand", "development": true }
   ],
   "defaultRuntime": "docker",
   "services": [
@@ -34,6 +35,22 @@
             { "key": "control", "containerPort": 8080, "protocol": "http" }
           ]
         },
+        "dev": {
+          "type": "localCommand",
+          "workingDirectory": ".",
+          "command": "dotnet watch --non-interactive --project src/TranscodeEngine.Api/TranscodeEngine.Api.csproj run --no-launch-profile",
+          "ports": [
+            { "key": "control", "containerPort": 8080, "protocol": "http" }
+          ],
+          "artifact": "source",
+          "setup": "dotnet restore src/TranscodeEngine.Api/TranscodeEngine.Api.csproj",
+          "environment": {
+            "DOTNET_USE_POLLING_FILE_WATCHER": "1",
+            "DOTNET_WATCH_RESTART_ON_RUDE_EDIT": "1",
+            "DOTNET_WATCH_SUPPRESS_LAUNCH_BROWSER": "1",
+            "DOTNET_NOLOGO": "1"
+          }
+        },
         "local": {
           "type": "localCommand",
           "workingDirectory": ".",
@@ -52,7 +69,8 @@
     "enabled": true,
     "targets": [
       { "runtime": "docker", "service": "engine", "containerPath": "/app/data", "environment": "HOSTY_APP_DATA_DIR" },
-      { "runtime": "local", "environment": "HOSTY_APP_DATA_DIR" }
+      { "runtime": "local", "environment": "HOSTY_APP_DATA_DIR" },
+      { "runtime": "dev", "environment": "HOSTY_APP_DATA_DIR" }
     ]
   },
   "externalMounts": {
