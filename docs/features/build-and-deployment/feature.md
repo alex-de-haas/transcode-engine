@@ -1,7 +1,7 @@
 # Build and Deployment
 
 Created: 2026-07-03
-Updated: 2026-09-08
+Updated: 2026-09-17
 
 ## Description
 
@@ -39,7 +39,7 @@ A two-stage build from the repo root:
   `mkvtoolnix` and its libraries; the `dovi_tool` binary is under 5 MB.
 
 Hardware VAAPI needs a `/dev/dri` render node at runtime, granted through the
-`docker-vaapi` [manifest profile](../hosty-runtime-app.md#runtime-profiles).
+`docker-vaapi` [manifest profile](../hosty-runtime-app/feature.md#runtime-profiles).
 
 ## The entrypoint (`docker/entrypoint.sh`)
 
@@ -124,7 +124,21 @@ Before it is functional, bind at least one host path into the `media` mount with
 same label the consumer uses for its matching catalog root (see
 [Media mounts](../media-mounts.md)).
 
-## Local development
+## Core-managed development
+
+The `dev` profile restores the project and runs noninteractive `dotnet watch` natively. It uses
+Core's assigned control port, app data and media mounts, and the host's ffmpeg/ffprobe and native
+encoders. See [development profile](../hosty-runtime-app/feature.md#development-profile) for
+prerequisites, source selection and the effect of watch restarts on in-memory jobs.
+
+```bash
+hosty apps install . --runtime dev
+hosty apps source-override com.haas.transcode-engine --path .
+# Configure the required media mount in Shell.
+hosty apps start com.haas.transcode-engine
+```
+
+## Standalone development
 
 The app runs directly for API/engine work without Hosty:
 

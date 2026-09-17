@@ -30,7 +30,7 @@ Implemented:
 - **App manifest** (`manifest.json`) — a default `docker` service (software encoding, starts on any host),
   an opt-in `docker-vaapi` profile that adds the `/dev/dri` device passthrough for Linux hosts that expose a
   render node (requires docker-host capabilities/devices support), and a `local` (native) runtime profile for
-  host-native encoders (macOS VideoToolbox), plus a shared `media` mount and the control port.
+  host-native encoders (macOS VideoToolbox), a native `dev` profile with source watching, plus a shared `media` mount and the control port.
 - **Container** (`Dockerfile` + `docker/entrypoint.sh`) — ffmpeg + the VA-API userspace stack
   (`mesa-va-drivers` covers Intel iHD/i965 and AMD radeonsi). The entrypoint logs the visible `/dev/dri`
   devices and a best-effort `vainfo` so a misconfigured passthrough is obvious in the logs; it never fails
@@ -153,6 +153,23 @@ hosty apps start com.haas.transcode-engine
 `amfrt64.dll`); set `HWACCEL=amf` to force it. If the runtime is missing, the job falls back to software with
 a warning rather than failing. `GET /hardware` reports `amfAvailable`, and each job's `effectiveHardware`
 reads `amf` when hardware encoding is actually in effect.
+
+## Development runtime
+
+Select `dev` to run editable source under Core with `dotnet watch`:
+
+```bash
+hosty apps install . --runtime dev
+hosty apps source-override com.haas.transcode-engine --path .
+# Configure the required media mount through Shell before starting.
+hosty apps start com.haas.transcode-engine
+```
+
+The Core account needs the .NET 10 SDK, ffmpeg and ffprobe on PATH. This profile uses the
+host's native encoders like `local`; it does not require a development Docker image. Source
+edits hot-reload or restart the engine automatically. Restarts interrupt active jobs and clear
+the in-memory job list, so use disposable test media. See the
+[development contract](docs/features/hosty-runtime-app/feature.md#development-profile).
 
 ## Consumer integration
 

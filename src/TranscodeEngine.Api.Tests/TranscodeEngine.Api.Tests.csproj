@@ -25,6 +25,10 @@
     <ProjectReference Include="..\TranscodeEngine.Api\TranscodeEngine.Api.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="../../manifest.json" Link="manifest.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <!-- Lets the endpoint tests host MapTranscodeEndpoints on an in-memory TestServer. -->
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
