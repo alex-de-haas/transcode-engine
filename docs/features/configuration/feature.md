@@ -19,7 +19,7 @@ Set by Core, not by the operator:
 | --- | --- | --- |
 | `HOSTY_APP_DATA_DIR` | engine | App data / scratch dir; the standalone fallback media root lives under `media/`. Falls back to `{contentRoot}/data` when unset. |
 | `HOSTY_MOUNT_MEDIA` | engine | Comma-joined `label=path` media mounts, parsed into the label→root map. See [Media mounts](../media-mounts.md). |
-| `HOSTY_PORT_CONTROL` | Program.cs | Loopback control port under the `local` (localCommand) runtime; the app binds exactly this. Ignored in the container. |
+| `HOSTY_PORT_CONTROL` | Program.cs | Loopback control port under the native `local` and `dev` (`localCommand`) runtimes; the app binds exactly this. Ignored in the container. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` (+ other `OTEL_*`) | engine | Presence switches on OTLP export; absence = no telemetry. See [Hosty runtime app](../hosty-runtime-app/feature.md#telemetry). |
 | `DOTNET_RUNNING_IN_CONTAINER` | Program.cs | Set by the docker image; when `true`, Kestrel's default binding (`ASPNETCORE_URLS`) is used instead of `HOSTY_PORT_CONTROL`. |
 | `ASPNETCORE_URLS` | container | Container listen URL (`http://+:8080`), set by the image. |
@@ -45,7 +45,7 @@ directly (e.g. for a local run) when needed:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `FFMPEG_PATH` | `ffmpeg` | Path to the `ffmpeg` binary; a bare name resolves on `PATH`. Useful to point the native `local` runtime at a specific host build. |
+| `FFMPEG_PATH` | `ffmpeg` | Path to the `ffmpeg` binary; a bare name resolves on `PATH`. Useful to point the native `local` and `dev` runtimes at a specific host build. |
 | `FFPROBE_PATH` | `ffprobe` | Path to the `ffprobe` binary (used to probe input duration). |
 | `DOVI_TOOL_PATH` | `dovi_tool` | Path to `dovi_tool`, which rewrites Dolby Vision RPU metadata for `dolbyVision: toProfile81`. With the two below, its presence is what `GET /hardware` reports under `tools`; a host missing any of the three refuses that job option. |
 | `MKVMERGE_PATH` | `mkvmerge` | Path to MKVToolNix's `mkvmerge` (assembles a converted output and identifies the input's tracks). |
@@ -53,7 +53,7 @@ directly (e.g. for a local run) when needed:
 
 ## Precedence notes
 
-- The control port under `local` is `HOSTY_PORT_CONTROL`; in the container it is
+- The control port under `local` and `dev` is `HOSTY_PORT_CONTROL`; in the container it is
   `ASPNETCORE_URLS` (the container flag `DOTNET_RUNNING_IN_CONTAINER` is what selects
   between them).
 - Per-job `hardwareAcceleration` overrides the `HWACCEL` engine default;
