@@ -40,6 +40,7 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<FfmpegTranscodeEng
 
 // Exposes the ffprobe this image already carries, so a consumer does not have to ship its own.
 builder.Services.AddSingleton<IMediaInspector, FfprobeMediaInspector>();
+builder.Services.AddSingleton<TranscodeEngine.Api.Bluray.IBlurayInspector, TranscodeEngine.Api.Bluray.BlurayInspector>();
 
 builder.Services.AddSingleton<TranscodeEventStream>();
 builder.Services.AddHostedService<TranscodeProgressBroadcaster>();

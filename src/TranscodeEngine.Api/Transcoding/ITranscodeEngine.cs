@@ -136,7 +136,8 @@ public sealed record TranscodeJobRequest(
     IReadOnlyList<ExtractionOutput>? Outputs = null,
     DolbyVisionMode DolbyVision = DolbyVisionMode.Keep,
     IReadOnlyList<string>? JoinPaths = null,
-    string? ClientJobId = null)
+    string? ClientJobId = null,
+    TranscodeEngine.Api.Bluray.BluraySelection? Bluray = null)
 {
     /// <summary>Two video files played consecutively, in their declared order.</summary>
     public bool IsJoin => JoinPaths is { Count: > 0 };

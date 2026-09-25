@@ -13,7 +13,11 @@ namespace TranscodeEngine.Api.Transcoding;
 /// reachable, so <c>dolbyVision: toProfile81</c> is accepted.</param>
 /// <param name="DoviTool">The <c>dovi_tool</c> version, or null when it is not found.</param>
 /// <param name="Mkvtoolnix">The MKVToolNix version (<c>mkvmerge --version</c>), or null when it is not found.</param>
-public sealed record ToolingStatus(bool DolbyVisionConversion, string? DoviTool, string? Mkvtoolnix);
+public sealed record ToolingStatus(bool DolbyVisionConversion, string? DoviTool, string? Mkvtoolnix)
+{
+    /// <summary>Version 81 introduced Blu-ray Dolby Vision layer combination.</summary>
+    public bool BlurayImport => Version.TryParse(Mkvtoolnix, out var version) && version.Major >= 81;
+}
 
 /// <summary>Finds the conversion tools on the host without spawning anything, and describes their versions
 /// when asked to — the one place a process is started, bounded and best-effort.</summary>
