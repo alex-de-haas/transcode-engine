@@ -92,9 +92,18 @@ public sealed class BlurayInspector(TranscodeEngineSettings settings) : IBlurayI
         return (Convert.ToHexString(hash.GetHashAndReset()), size);
     }
 
-    internal static string Child(string parent, string name) =>
-        Directory.EnumerateFileSystemEntries(parent).SingleOrDefault(path => Path.GetFileName(path).Equals(name, StringComparison.OrdinalIgnoreCase))
-        ?? throw new ArgumentException($"A required disc member is missing: {name}.");
+    internal static string Child(string parent, string name) => ResolveChild(Directory.EnumerateFileSystemEntries(parent), name);
+
+    internal static string ResolveChild(IEnumerable<string> entries, string name)
+    {
+        var matches = entries.Where(path => Path.GetFileName(path).Equals(name, StringComparison.OrdinalIgnoreCase)).Take(2).ToArray();
+        return matches.Length switch
+        {
+            0 => throw new ArgumentException($"A required disc member is missing: {name}."),
+            1 => matches[0],
+            _ => throw new ArgumentException($"Ambiguous disc member: multiple entries match {name} ignoring case.")
+        };
+    }
     internal static bool ValidId(string id) => id.Length == 5 && id.All(char.IsAsciiDigit);
     internal static string PlaylistPath(string root, string id) => ValidId(id)
         ? Child(Child(Child(root, "BDMV"), "PLAYLIST"), id + ".mpls")
@@ -163,13 +172,19 @@ public sealed class BlurayInspector(TranscodeEngineSettings settings) : IBlurayI
         }).ToList();
     }
 
-    internal static async Task<string> IdentifyAsync(string tool, string path, CancellationToken ct)
+    internal static async Task<string> IdentifyAsync(string tool, string path, CancellationToken ct, TimeSpan? inspectionTimeout = null)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromMinutes(2));
+        timeout.CancelAfter(inspectionTimeout ?? TimeSpan.FromMinutes(2));
         var start = FfmpegTranscodeEngine.ToolProcess(tool);
         foreach (var arg in FfmpegTranscodeEngine.BuildIdentifyArguments(path)) start.ArgumentList.Add(arg);
-        using var process = Process.Start(start) ?? throw new ArgumentException("Could not start disc inspection.");
+        using var process = new Process { StartInfo = start };
+        try
+        {
+            if (!process.Start()) throw new ArgumentException("Could not start disc inspection.");
+        }
+        catch (System.ComponentModel.Win32Exception ex)
+        { throw new ArgumentException("Could not start MKVToolNix. Check that mkvmerge is installed and executable.", ex); }
         try
         {
             var output = process.StandardOutput.ReadToEndAsync(timeout.Token);
@@ -180,9 +195,12 @@ public sealed class BlurayInspector(TranscodeEngineSettings settings) : IBlurayI
             if (process.ExitCode > 1) throw new ArgumentException($"Disc inspection failed: {detail} {text}");
             return text;
         }
-        catch
+        catch (Exception ex)
         {
-            try { if (!process.HasExited) process.Kill(true); } catch (InvalidOperationException) { }
+            try { if (!process.HasExited) process.Kill(true); }
+            catch (Exception killError) when (killError is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+            if (ex is OperationCanceledException && !ct.IsCancellationRequested)
+                throw new ArgumentException("MKVToolNix disc inspection timed out. Retry inspection or check the source storage.", ex);
             throw;
         }
     }

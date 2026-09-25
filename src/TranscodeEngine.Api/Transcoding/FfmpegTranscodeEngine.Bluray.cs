@@ -39,7 +39,7 @@ public sealed partial class FfmpegTranscodeEngine
                 else if (record.State == JobState.Failed) job.Fail(record.Error);
                 else job.Complete(record.State);
                 _jobs[id] = job;
-                SaveJoin(job);
+                SaveBluray(job);
             }
             catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException)
             { _logger.LogWarning(ex, "Could not restore Blu-ray job {Path}.", path); }
@@ -84,7 +84,7 @@ public sealed partial class FfmpegTranscodeEngine
     internal static List<string> BuildBlurayArguments(string playlistPath, string destination, BluraySelection selection)
     {
         // MKVToolNix otherwise drops a final MPLS chapter shorter than five seconds.
-        var args = new List<string> { "--engage", "keep_last_chapter_in_mpls",
+        var args = new List<string> { "--gui-mode", "--engage", "keep_last_chapter_in_mpls",
             "--output", destination, "--video-tracks", selection.VideoTrackId.ToString(),
             "--audio-tracks", string.Join(",", selection.Audio.Select(t => t.Id)), "--no-buttons", "--no-attachments" };
         if (selection.Subtitles.Count == 0) args.Add("--no-subtitles");
@@ -100,7 +100,7 @@ public sealed partial class FfmpegTranscodeEngine
         return args;
     }
 
-    private async Task RunBlurayJobAsync(TranscodeJob job, CancellationToken ct)
+    internal async Task RunBlurayJobAsync(TranscodeJob job, CancellationToken ct)
     {
         var request = job.Request;
         var selection = request.Bluray!;
@@ -118,9 +118,14 @@ public sealed partial class FfmpegTranscodeEngine
             var start = ToolProcess(_settings.MkvmergePath);
             foreach (var arg in BuildBlurayArguments(BlurayInspector.PlaylistPath(request.InputPath, selection.PlaylistId), temp, selection))
                 start.ArgumentList.Add(arg);
-            // Reuse the bounded, cancellable tool runner. Its stage range reserves the end for validation.
+            // MKVToolNix reports playlist progress; disc size also includes unrelated titles.
             if (!await RunStageAsync(job, start, "mkvmerge", 0,
-                    StageProgress.Growth(temp, inventory.Size, true), tail, ct, maxAcceptedExitCode: 1)) return;
+                    StageProgress.Growth(temp, null, true), tail, ct, maxAcceptedExitCode: 1,
+                    outputProgress: BlurayMuxProgress, completionPercent: 90))
+            {
+                if (ct.IsCancellationRequested && !job.CancelRequested) MarkBlurayInterrupted(job);
+                return;
+            }
             job.ReportProgress(90);
             if (BlurayInspector.Inventory(request.InputPath).Revision != selection.Revision)
                 throw new ArgumentException("The disc changed during MKV creation; output was not published.");
@@ -128,24 +133,62 @@ public sealed partial class FfmpegTranscodeEngine
             ValidateBlurayOutput(job.BlurayPlaylist!, selection, json);
             var media = await new FfprobeMediaInspector(_settings, NullLogger<FfprobeMediaInspector>.Instance).InspectAsync(temp, ct);
             ValidateBlurayPicture(job.BlurayPlaylist!.VideoFormats ?? [], media?.Streams.FirstOrDefault(s => s.Kind == ProbedStreamKind.Video));
-            if (job.CancelRequested || ct.IsCancellationRequested) { job.Complete(JobState.Cancelled); return; }
-            File.Move(temp, output, overwrite: false);
-            job.ReportOutputSize(new FileInfo(output).Length);
-            job.Complete(JobState.Completed);
-            SaveJoin(job);
-            JobCompleted?.Invoke(this, job.JobId);
+            if (job.CancelRequested || ct.IsCancellationRequested) { MarkBlurayInterrupted(job); return; }
+            PublishBlurayOutput(job, temp, output);
         }
-        catch (OperationCanceledException) { job.Complete(JobState.Cancelled); }
+        catch (OperationCanceledException) { MarkBlurayInterrupted(job); }
         catch (Exception ex)
         {
             job.Fail(ex.Message);
             _logger.LogWarning(ex, "Blu-ray job {Id} failed.", job.JobId);
-            JobFailed?.Invoke(this, job.JobId);
+            NotifyBluraySafely(JobFailed, job.JobId);
         }
         finally
         {
             TryDeleteOutput(temp);
-            SaveJoin(job);
+            SaveBluraySafely(job);
+        }
+    }
+
+    internal static double? BlurayMuxProgress(string line)
+    {
+        const string prefix = "#GUI#progress ";
+        return line.StartsWith(prefix, StringComparison.Ordinal) &&
+            int.TryParse(line[prefix.Length..].TrimEnd('%'), out var percent) && percent is >= 0 and <= 100
+            ? percent * 0.9 : null;
+    }
+
+    internal static void MarkBlurayInterrupted(TranscodeJob job)
+    {
+        if (job.CancelRequested) job.Complete(JobState.Cancelled);
+        else job.Fail("The engine stopped before MKV creation finished. The original disc is unchanged; start a new operation to retry.");
+    }
+
+    internal void PublishBlurayOutput(TranscodeJob job, string temp, string output)
+    {
+        var size = new FileInfo(temp).Length;
+        File.Move(temp, output, overwrite: false);
+        job.ReportOutputSize(size);
+        job.Complete(JobState.Completed);
+        // Publication is complete; journal/event failures must not turn it into a failed job.
+        SaveBluraySafely(job);
+        NotifyBluraySafely(JobCompleted, job.JobId);
+    }
+
+    private void SaveBluraySafely(TranscodeJob job)
+    {
+        try { SaveBluray(job); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        { _logger.LogWarning(ex, "Could not persist terminal Blu-ray job {Id}; keeping the worker available.", job.JobId); }
+    }
+
+    private void NotifyBluraySafely(EventHandler<string>? handlers, string id)
+    {
+        if (handlers is null) return;
+        foreach (EventHandler<string> handler in handlers.GetInvocationList())
+        {
+            try { handler(this, id); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Blu-ray job {Id} notification failed.", id); }
         }
     }
 

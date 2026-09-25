@@ -15,6 +15,94 @@ public sealed class BlurayTests : IDisposable
     private readonly string root = Directory.CreateDirectory(Path.Combine(OperatingSystem.IsMacOS() ? "/private/tmp" : Path.GetTempPath(), "bluray-tests-" + Guid.NewGuid().ToString("N"))).FullName;
     public void Dispose() => Directory.Delete(root, true);
 
+    [Fact]
+    public void Disc_members_with_ambiguous_case_have_an_actionable_error()
+    {
+        Assert.Equal("/disc/BDMV", BlurayInspector.ResolveChild(["/disc/BDMV"], "bdmv"));
+        Assert.Contains("Ambiguous disc member", Assert.Throws<ArgumentException>(() =>
+            BlurayInspector.ResolveChild(["/disc/BDMV", "/disc/bdmv"], "BDMV")).Message);
+        Assert.Contains("missing", Assert.Throws<ArgumentException>(() => BlurayInspector.ResolveChild([], "BDMV")).Message);
+    }
+
+    [Fact]
+    public async Task Missing_inspection_tool_has_an_actionable_error()
+    {
+        var error = await Assert.ThrowsAsync<ArgumentException>(() =>
+            BlurayInspector.IdentifyAsync(Path.Combine(root, "missing-mkvmerge"), "disc", default));
+        Assert.Contains("installed and executable", error.Message);
+    }
+
+    [Fact]
+    public async Task Inspection_timeout_is_distinct_from_request_cancellation()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var script = Path.Combine(root, "slow-tool");
+        await File.WriteAllTextAsync(script, "#!/bin/sh\nexec sleep 10\n");
+        File.SetUnixFileMode(script, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var error = await Assert.ThrowsAsync<ArgumentException>(() =>
+            BlurayInspector.IdentifyAsync(script, "disc", default, TimeSpan.FromMilliseconds(100)));
+        Assert.Contains("timed out", error.Message);
+        using var cancelled = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            BlurayInspector.IdentifyAsync(script, "disc", cancelled.Token));
+    }
+
+    [Theory]
+    [InlineData("#GUI#progress 0%", 0.0)]
+    [InlineData("#GUI#progress 50%", 45.0)]
+    [InlineData("#GUI#progress 100%", 90.0)]
+    [InlineData("#GUI#progress 101%", null)]
+    [InlineData("other output", null)]
+    public void Mux_progress_uses_the_playlist_and_reserves_validation(string line, double? expected) =>
+        Assert.Equal(expected, FfmpegTranscodeEngine.BlurayMuxProgress(line));
+
+    private TranscodeJob DiscJob(string input, string output) => new(Guid.NewGuid().ToString("N"),
+        new(input, output, TranscodeVideoCodec.Hevc, TranscodeHardware.None, null, CopyVideo: true, Bluray: Selection), 20)
+        { BlurayPlaylist = Tracks };
+
+    [Theory]
+    [InlineData(false, JobState.Failed)]
+    [InlineData(true, JobState.Cancelled)]
+    public void Shutdown_requires_a_new_operation_but_user_cancellation_is_reported_as_cancelled(bool requested, JobState expected)
+    {
+        var job = DiscJob(root, Path.Combine(root, "out.mkv"));
+        job.CancelRequested = requested;
+        FfmpegTranscodeEngine.MarkBlurayInterrupted(job);
+        Assert.Equal(expected, job.State);
+        if (!requested) Assert.Contains("start a new operation", job.ToSnapshot().Error);
+    }
+
+    [Fact]
+    public async Task Terminal_journal_failure_does_not_escape_the_job_runner()
+    {
+        File.WriteAllText(Path.Combine(root, "bluray-jobs"), "blocks the journal directory");
+        using var engine = new FfmpegTranscodeEngine(new TranscodeEngineSettings { AppDataDir = root, MediaRoots = new Dictionary<string, string>() }, NullLogger<FfmpegTranscodeEngine>.Instance);
+        var first = DiscJob(Path.Combine(root, "missing"), Path.Combine(root, "out.mkv"));
+        await engine.RunBlurayJobAsync(first, default);
+        Assert.Equal(JobState.Failed, first.State);
+        var next = DiscJob(Path.Combine(root, "missing"), Path.Combine(root, "next.mkv"));
+        await engine.RunBlurayJobAsync(next, default);
+        Assert.Equal(JobState.Failed, next.State);
+    }
+
+    [Fact]
+    public void Published_output_remains_completed_when_journal_and_subscribers_fail()
+    {
+        File.WriteAllText(Path.Combine(root, "bluray-jobs"), "blocks the journal directory");
+        using var engine = new FfmpegTranscodeEngine(new TranscodeEngineSettings { AppDataDir = root, MediaRoots = new Dictionary<string, string>() }, NullLogger<FfmpegTranscodeEngine>.Instance);
+        engine.JobCompleted += (_, _) => throw new IOException("broken subscriber");
+        var notified = false;
+        engine.JobCompleted += (_, _) => notified = true;
+        var temp = Path.Combine(root, "temp.mkv"); var output = Path.Combine(root, "out.mkv");
+        File.WriteAllText(temp, "validated output");
+        var job = DiscJob(root, output);
+        engine.PublishBlurayOutput(job, temp, output);
+        Assert.Equal(JobState.Completed, job.State);
+        Assert.Equal("validated output", File.ReadAllText(output));
+        Assert.False(File.Exists(temp));
+        Assert.True(notified);
+    }
+
     private static byte[] Playlist(bool angle = false)
     {
         var bytes = new byte[140];

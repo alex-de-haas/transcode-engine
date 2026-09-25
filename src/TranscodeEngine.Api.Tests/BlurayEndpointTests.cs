@@ -36,8 +36,9 @@ public sealed class BlurayEndpointTests
             builder.WebHost.UseTestServer();
             builder.Services.AddSingleton(engine.Instance());
             builder.Services.AddSingleton(new TranscodeEngineSettings { AppDataDir = root, MediaRoots = new Dictionary<string, string> { ["movies"] = root } });
+            builder.Services.AddSingleton<TranscodeEngine.Api.Realtime.TranscodeEventStream>();
             await using var app = builder.Build();
-            BlurayEndpoints.Map(app);
+            app.MapTranscodeEndpoints();
             await app.StartAsync();
             var id = Guid.NewGuid();
             var selection = new BluraySelection("revision", "00001", 0, [new(1)], []);

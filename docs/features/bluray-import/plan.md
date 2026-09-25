@@ -50,5 +50,10 @@ read-only check does not replace a completed real-disc MKV acceptance run.
 
 PR preparation on 2026-09-25: Release build and all 360 xUnit tests pass with
 FFMPEG_PATH=/opt/homebrew/bin/ffmpeg and FFPROBE_PATH=/opt/homebrew/bin/ffprobe.
-Documentation index validation and git diff --check pass. The PR remains draft
-until the unchecked acceptance deliverables above are resolved.
+Documentation index validation and git diff --check pass. The user authorized
+merging the reviewed first implementation on 2026-09-25; the unchecked acceptance
+deliverables remain open and merging does not establish full payload preservation.
+
+Review verification on 2026-09-25: Release build and all 372 xUnit tests pass,
+including inspection errors, shutdown classification, mux progress, terminal
+journal failures and post-publication notification failures.
