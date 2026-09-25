@@ -63,6 +63,8 @@ internal sealed class TranscodeJob
 
     public string JobId { get; }
 
+    public TranscodeEngine.Api.Bluray.BlurayPlaylist? BlurayPlaylist { get; set; }
+
     public JoinMediaInfo[]? JoinParts { get; set; }
     public string JoinListPath => Path.Combine(Path.GetTempPath(), $"join-{JobId}.ffconcat");
     public string JoinMetadataPath => Path.Combine(Path.GetTempPath(), $"join-{JobId}.ffmetadata");
@@ -301,7 +303,7 @@ internal sealed class TranscodeJob
             // The effective encoder family is only known once the worker has resolved it (after Start);
             // a still-queued job reports null. An extraction or join reports "none" whatever the worker resolved:
             // it runs no encoder at all, and "software" would claim a software encode that never happened.
-            var effectiveHardware = Request.IsExtraction || Request.IsJoin ? "none" : _hardware switch
+            var effectiveHardware = Request.IsExtraction || Request.IsJoin || Request.Bluray is not null ? "none" : _hardware switch
             {
                 TranscodeHardware.Vaapi => "vaapi",
                 TranscodeHardware.VideoToolbox => "videotoolbox",

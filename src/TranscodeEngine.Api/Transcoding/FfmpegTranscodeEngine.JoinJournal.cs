@@ -19,6 +19,7 @@ public sealed partial class FfmpegTranscodeEngine
 
     private void SaveJoinCore(TranscodeJob job)
     {
+        SaveBluray(job);
         if (!job.Request.IsJoin || job.JoinParts is null) return;
         Directory.CreateDirectory(JoinJournalDirectory);
         var path = JoinJournalPath(job.JobId);

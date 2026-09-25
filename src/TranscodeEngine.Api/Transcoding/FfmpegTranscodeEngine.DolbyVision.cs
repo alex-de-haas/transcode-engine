@@ -485,7 +485,9 @@ public sealed partial class FfmpegTranscodeEngine
         StageProgress progress,
         StderrTail stderrTail,
         CancellationToken cancellationToken,
-        int maxAcceptedExitCode = 0)
+        int maxAcceptedExitCode = 0,
+        Func<string, double?>? outputProgress = null,
+        double? completionPercent = null)
     {
         // A cancel that arrived while the previous stage was finishing must not start the next one.
         if (job.CancelRequested)
@@ -514,8 +516,10 @@ public sealed partial class FfmpegTranscodeEngine
                 return;
             }
 
-            // ffmpeg's progress lines carry the percentage; the MKVToolNix tools print "Progress: N%" lines
-            // that only prove liveness here — the file they write is what measures them.
+            if (outputProgress?.Invoke(e.Data) is { } reported) job.ReportProgress(reported);
+
+            // ffmpeg reports media time; callers can supply a tool-specific percentage parser.
+            // Other tool output proves liveness while file growth measures stage progress.
             if (progress.FromFfmpeg)
             {
                 job.ApplyProgressLine(e.Data);
@@ -605,7 +609,7 @@ public sealed partial class FfmpegTranscodeEngine
             _logger.LogWarning("Job {JobId}: {Tool} finished with warnings (exit {Code}). {Tail}", job.JobId, tool, process.ExitCode, stderrTail.Text);
         }
 
-        job.ReportProgress(StagePercent(stage + 1, DolbyVisionStages, 0));
+        job.ReportProgress(completionPercent ?? StagePercent(stage + 1, DolbyVisionStages, 0));
         return true;
     }
 

@@ -33,6 +33,7 @@ public static class TranscodeEndpoints
     public static void MapTranscodeEndpoints(this IEndpointRouteBuilder app)
     {
         JoinEndpoints.Map(app);
+        BlurayEndpoints.Map(app);
         app.MapPost("/jobs", async (CreateJobRequest request, ITranscodeEngine engine, TranscodeEngineSettings settings, CancellationToken ct) =>
         {
             if (string.IsNullOrWhiteSpace(request.InputPath))

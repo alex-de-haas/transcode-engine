@@ -1,3 +1,4 @@
+using TranscodeEngine.Api.Bluray;
 using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -74,6 +75,7 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
         }
 
         RestoreJoins();
+        RestoreBlurays();
         _cts = new CancellationTokenSource();
         var workerCount = Math.Max(1, _settings.MaxConcurrentJobs);
         var tasks = Enumerable.Range(0, workerCount)
@@ -118,7 +120,7 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
         await _creationGate.WaitAsync(cancellationToken);
         try
         {
-            if (FindExistingJoin(request) is { } previous) return previous;
+            if ((FindExistingBluray(request) ?? FindExistingJoin(request)) is { } previous) return previous;
             RequireOutputAvailable(request);
         }
         finally { _creationGate.Release(); }
@@ -160,16 +162,16 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
 
     private void RequireOutputAvailable(TranscodeJobRequest request)
     {
-        if (request.IsJoin && File.Exists(request.OutputPath))
-            throw new ArgumentException("The join output already exists; choose another filename.");
-        if (_jobs.Values.Any(job => !job.IsTerminal && (job.Request.IsJoin || request.IsJoin) &&
+        if ((request.IsJoin || request.Bluray is not null) && File.Exists(request.OutputPath))
+            throw new ArgumentException("The output already exists; choose another filename.");
+        if (_jobs.Values.Any(job => !job.IsTerminal && (job.Request.IsJoin || request.IsJoin || job.Request.Bluray is not null || request.Bluray is not null) &&
             job.OutputPaths.Select(Path.GetFullPath).Intersect(request.OutputPaths.Select(Path.GetFullPath), PathComparer).Any()))
             throw new ArgumentException("Another job is already writing this output.");
     }
 
     private async Task<JobDescriptor> CreateCoreAsync(TranscodeJobRequest request, CancellationToken cancellationToken)
     {
-        var source = request.IsJoin ? default : await ProbeSourceAsync(request.InputPath, cancellationToken);
+        var source = request.IsJoin || request.Bluray is not null ? default : await ProbeSourceAsync(request.InputPath, cancellationToken);
         var duration = source.DurationSeconds;
         var inputSize = TryFileLength(request.InputPath);
 
@@ -204,12 +206,26 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
             duration = joinParts.Sum(part => part.Duration);
             inputSize = request.JoinPaths.Sum(path => new FileInfo(path).Length);
         }
-        var jobId = request.IsJoin && request.ClientJobId is { } clientId ? clientId : Guid.NewGuid().ToString("n");
-        var job = new TranscodeJob(jobId, request, duration, source.VideoPixelFormat, source) { JoinParts = joinParts };
+        BlurayPlaylist? discPlaylist = null;
+        if (request.Bluray is { } selection)
+        {
+            if (!request.CopyVideo || request.IsJoin || request.IsExtraction || request.ConvertsDolbyVision || request.AdditionalInputs is { Count: > 0 })
+                throw new ArgumentException("Disc jobs copy the selected playlist; unsupported transformations must be applied to the resulting MKV.");
+            if (!DolbyVisionTooling.Describe(_settings).BlurayImport)
+                throw new ArgumentException("Blu-ray MKV creation requires MKVToolNix 81 or newer.");
+            var inspection = await new BlurayInspector(_settings).InspectAsync(request.InputPath, selection.PlaylistId, cancellationToken);
+            if (inspection.Revision != selection.Revision) throw new ArgumentException("The disc changed; inspect it again.");
+            discPlaylist = inspection.Playlists.Single(p => p.Id == selection.PlaylistId);
+            ValidateBluraySelection(selection, discPlaylist);
+            duration = discPlaylist.DurationSeconds;
+            inputSize = inspection.SizeBytes;
+        }
+        var jobId = (request.IsJoin || request.Bluray is not null) && request.ClientJobId is { } clientId ? clientId : Guid.NewGuid().ToString("n");
+        var job = new TranscodeJob(jobId, request, duration, source.VideoPixelFormat, source) { JoinParts = joinParts, BlurayPlaylist = discPlaylist };
         await _creationGate.WaitAsync(cancellationToken);
         try
         {
-            if (FindExistingJoin(request) is { } previous) return previous;
+            if ((FindExistingBluray(request) ?? FindExistingJoin(request)) is { } previous) return previous;
             RequireOutputAvailable(request);
             SaveJoin(job);
             _jobs[jobId] = job;
@@ -217,6 +233,7 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
             {
                 _jobs.TryRemove(jobId, out _);
                 if (request.IsJoin) File.Delete(JoinJournalPath(jobId));
+                if (request.Bluray is not null) File.Delete(BlurayJournalPath(jobId));
                 throw new InvalidOperationException(
                     "The transcode engine cannot accept the job (the queue is full or the engine is shutting down).");
             }
@@ -244,9 +261,12 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
 
     public Task RemoveAsync(string jobId, bool deleteOutput, CancellationToken cancellationToken)
     {
+        if (_jobs.TryGetValue(jobId, out var active) && active.Request.Bluray is not null && active.State is JobState.Queued or JobState.Running)
+            throw new InvalidOperationException("Cancel MKV creation and wait for completion before removing its job.");
         if (_jobs.TryRemove(jobId, out var job))
         {
             if (job.Request.IsJoin) TryDeleteOutput(JoinJournalPath(jobId));
+            if (job.Request.Bluray is not null) TryDeleteOutput(BlurayJournalPath(jobId));
             job.CancelRequested = true;
             TryKill(job);
 
@@ -336,6 +356,12 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
 
         // A Dolby Vision conversion is a copy job that runs as several tool stages rather than one ffmpeg
         // invocation; it shares the state transitions above and takes its own path from here.
+        if (job.Request.Bluray is not null)
+        {
+            await RunBlurayJobAsync(job, cancellationToken);
+            return;
+        }
+
         if (job.Request.ConvertsDolbyVision)
         {
             await RunDolbyVisionJobAsync(job, hardware, cancellationToken);
