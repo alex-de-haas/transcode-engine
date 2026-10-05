@@ -1,7 +1,10 @@
-# Probe API
+---
+created: 2026-07-27
+updated: 2026-09-04
+summary: POST /probe returns a normalized description of a media file's container and streams.
+---
 
-Created: 2026-07-27
-Updated: 2026-09-04
+# Probe API
 
 `POST /probe` inspects one media file on a media mount and returns a normalized
 description of its container and streams. It exists so a consumer does not have to

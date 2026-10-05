@@ -1,7 +1,10 @@
-# Build and Deployment
+---
+created: 2026-07-03
+updated: 2026-09-17
+summary: The container image, its entrypoint, CI and multi-arch publishing, and running under the docker and local runtimes.
+---
 
-Created: 2026-07-03
-Updated: 2026-09-17
+# Build and Deployment
 
 ## Description
 
@@ -122,7 +125,7 @@ D3D11VA + the `*_amf` encoders) when the host has the AMD Adrenalin driver (whic
 
 Before it is functional, bind at least one host path into the `media` mount with the
 same label the consumer uses for its matching catalog root (see
-[Media mounts](../media-mounts.md)).
+[Media mounts](../media-mounts/feature.md)).
 
 ## Core-managed development
 

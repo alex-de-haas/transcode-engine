@@ -1,7 +1,10 @@
-# Merge Jobs
+---
+created: 2026-07-27
+updated: 2026-07-29
+summary: Jobs that fold sidecar dubs and subtitles into a video and can rewrite stream languages and titles.
+---
 
-Created: 2026-07-27
-Updated: 2026-07-29
+# Merge Jobs
 
 A job can name further files whose streams join its output, so a consumer can fold
 sidecar dubs and subtitles into a video without running `ffmpeg` itself. The same

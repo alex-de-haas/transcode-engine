@@ -1,7 +1,10 @@
-# Control API
+---
+created: 2026-07-03
+updated: 2026-09-04
+summary: The HTTP control API and SSE event stream through which consumers create and follow transcode jobs.
+---
 
-Created: 2026-07-03
-Updated: 2026-09-04
+# Control API
 
 ## Description
 
@@ -49,7 +52,7 @@ Body (`CreateJobRequest`). `inputPath` is required, and so is exactly one of
 | `inputPath` | string | **Required.** Path relative to the selected media mount (or absolute inside it). Must exist. |
 | `outputPath` | string? | Where the composed result is written, relative to the (output) mount. Must differ from the resolved input. **Required unless `outputs` is given**, and mutually exclusive with it. |
 | `outputs` | object[]? | Writes each named stream to its own file instead of composing one — an **extraction**. `{ mountLabel?, path, streamIndex, codec?, language?, title? }`, `codec` being `copy` (default), `srt`, `ass` or `webvtt`. Naming any makes every other field in this table invalid — except `outputMountLabel`, which stays the default mount for entries that name none — since the rest all describe a composed output. See [Extract Jobs](../extract-jobs/feature.md). |
-| `inputMountLabel` | string? | Selects the media mount the input resolves against. Required when several mounts are configured; optional with exactly one. See [Media mounts](../media-mounts.md). |
+| `inputMountLabel` | string? | Selects the media mount the input resolves against. Required when several mounts are configured; optional with exactly one. See [Media mounts](../media-mounts/feature.md). |
 | `outputMountLabel` | string? | Media mount for the output — for an extraction, the default mount for every entry in `outputs` that names none. Defaults to `inputMountLabel` when omitted. |
 | `videoCodec` | string? | `h264`, `hevc` (default), or `copy` (remux the video untouched). Aliases: `h265`/`x265` → hevc, `avc`/`x264` → h264. **Defaults to `copy` on a merge** — see `additionalInputs`. |
 | `hardwareAcceleration` | string? | `auto` (default), `vaapi`, `videotoolbox`, `amf`, or `none`. A choice the host can't satisfy falls back to software — including a 10-bit HEVC job on a VAAPI device whose encoder is Main-only. See [Hardware acceleration](../hardware-acceleration/feature.md). |
@@ -191,6 +194,6 @@ Required coverage:
   without the tools → `400`; a copy and a codec-less merge → `200` with the mode on
   the engine's request; the engine's own refusal → `400` with its reason.
 - Path resolution (label selection, traversal safety) is covered in
-  [Media mounts](../media-mounts.md).
+  [Media mounts](../media-mounts/feature.md).
 - The snapshot/argument derivations that back these responses are unit-tested in the
   engine — see [Transcode engine](../transcode-engine/feature.md).

@@ -1,7 +1,10 @@
-# Video Part Joining
+---
+created: 2026-09-10
+updated: 2026-09-10
+summary: Join two ordered video parts into one Matroska output through POST /jobs/join.
+---
 
-Created: 2026-09-10
-Updated: 2026-09-10
+# Video Part Joining
 
 ## Contract
 

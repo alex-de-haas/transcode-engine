@@ -1,7 +1,10 @@
-# Transcode Engine
+---
+created: 2026-07-03
+updated: 2026-09-04
+summary: The ffmpeg engine wrapper, its worker pool, in-memory job state and event mapping.
+---
 
-Created: 2026-07-03
-Updated: 2026-09-04
+# Transcode Engine
 
 ## Description
 
