@@ -186,18 +186,21 @@ function validateFrontmatter(file, kind, data) {
   }
 }
 
-// Lines outside fenced code blocks, with their 0-based index.
+// Lines outside fenced code blocks, with their 0-based index. As in CommonMark, a fence closes only on
+// a bare run of the same character at least as long as the one that opened it, so a four-backtick
+// fence can show a three-backtick example.
 function proseLines(lines, from) {
   const out = [];
   let fence = null;
   for (let i = from; i < lines.length; i++) {
-    const marker = lines[i].match(/^\s*(`{3,}|~{3,})/);
-    if (marker) {
-      if (fence === null) fence = marker[1][0];
-      else if (marker[1][0] === fence) fence = null;
+    if (fence === null) {
+      const open = lines[i].match(/^\s*(`{3,}|~{3,})/);
+      if (open) fence = open[1];
+      else out.push({ index: i, line: lines[i] });
       continue;
     }
-    if (fence === null) out.push({ index: i, line: lines[i] });
+    const close = lines[i].match(/^\s*(`{3,}|~{3,})\s*$/);
+    if (close && close[1][0] === fence[0] && close[1].length >= fence.length) fence = null;
   }
   return out;
 }
@@ -236,6 +239,7 @@ function checkDeliverables(file, prose) {
     ids.set(id[1], index);
     if (mark !== " ") done++;
   }
+  if (sections === 0) errors.push(`${rel(file)}: a plan needs a "## Deliverables" section`);
   return { total: ids.size, done };
 }
 
@@ -305,6 +309,9 @@ if (existsSync(featuresDir)) {
     if (statSync(dir).isDirectory()) {
       const featureMd = join(dir, "feature.md");
       const planMd = join(dir, "plan.md");
+      for (const file of markdownUnder(dir))
+        if (file !== featureMd && file !== planMd)
+          errors.push(`${rel(file)}: a feature folder holds only feature.md and plan.md; move this content into one of them`);
       if (!existsSync(featureMd) && !existsSync(planMd)) {
         errors.push(`${rel(dir)}: contains neither feature.md nor plan.md`);
         continue;

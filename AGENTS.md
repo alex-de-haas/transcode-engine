@@ -74,6 +74,8 @@ docs/
   `docs/reviews/`. It authorizes no implementation and owns no deliverables:
   work it names is tracked in the owning feature's `plan.md`. Feature and plan
   documents may cite its decisions by number and date.
+- A feature folder holds only `feature.md` and `plan.md`; images and other
+  non-Markdown assets may sit beside them.
 - Beyond that there are no other documentation folders. A large or cross-cutting
   feature is an ordinary feature whose docs cross-link the features it spans;
   its `plan.md` never duplicates their deliverables — it links to them and keeps
@@ -137,8 +139,8 @@ Unknown keys are rejected. The H1 is the title; there is no `title` key.
     in chat, never on the agent's own judgment.
   - **In Progress** — implementation started.
   - **Blocked** — cannot proceed; the blocker is recorded in the document.
-- Deliverables live in one `## Deliverables` section, which may contain `###`
-  subsections such as phases, and they are the only checkboxes in a plan. Each
+- Every plan has exactly one `## Deliverables` section, which may contain `###`
+  subsections such as phases; deliverables are the only checkboxes in a plan. Each
   is a top-level item that starts with a stable ID: `- [ ] D3. Text`. IDs are
   never renumbered or reused: a new deliverable takes the next free number, and
   a removed deliverable's ID stays retired. Use plain bullets, not nested
