@@ -1,7 +1,10 @@
-# Dolby Vision Conversion
+---
+created: 2026-09-04
+updated: 2026-09-04
+summary: Video-copy jobs rewrite dual-layer Dolby Vision profile 7 into single-layer profile 8.1, and the probe reports the profile.
+---
 
-Created: 2026-09-04
-Updated: 2026-09-04
+# Dolby Vision Conversion
 
 A video-copy job can rewrite a dual-layer Dolby Vision **profile 7** source — every UHD
 Blu-ray remux — into single-layer **profile 8.1**, and the probe reports the Dolby Vision

@@ -1,7 +1,10 @@
-# Compression Controls
+---
+created: 2026-08-06
+updated: 2026-09-04
+summary: A quality level every encoder family honours and per-track audio re-encoding, so a job can make files smaller.
+---
 
-Created: 2026-08-06
-Updated: 2026-09-04
+# Compression Controls
 
 The two knobs that let a job make a file **smaller** rather than merely different: a
 quality level that every encoder family honours, and per-track audio re-encoding.
