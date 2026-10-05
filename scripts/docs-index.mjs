@@ -170,7 +170,11 @@ function validateFrontmatter(file, kind, data) {
     const summary = data.summary;
     if (typeof summary !== "string") errors.push(`${at}: summary must be a single sentence, not a list`);
     else if (summary.length > SUMMARY_MAX) errors.push(`${at}: summary is ${summary.length} characters; the limit is ${SUMMARY_MAX}`);
-    else if (/[`[\]*]/.test(summary)) errors.push(`${at}: summary must be plain text (no backticks, brackets or emphasis)`);
+    // Markdown that would leak into the index: code, links, emphasis (underscores only at a word
+    // edge, so identifiers like HOSTY_PORT_KEY stay legal), strikethrough and inline HTML.
+    else if (/[`[\]*~]|(^|[\s(])_|_($|[\s).,;:!?])|<[A-Za-z/!]/.test(summary))
+      errors.push(`${at}: summary must be plain text (no code, links, emphasis or HTML)`);
+    else if (/[.!?]["')]?\s+\S/.test(summary)) errors.push(`${at}: summary must be a single sentence`);
   }
 
   if ("components" in data) {
@@ -240,6 +244,7 @@ function checkDeliverables(file, prose) {
     if (mark !== " ") done++;
   }
   if (sections === 0) errors.push(`${rel(file)}: a plan needs a "## Deliverables" section`);
+  else if (ids.size === 0) errors.push(`${rel(file)}: a plan needs at least one deliverable, written as "- [ ] D1. Text"`);
   return { total: ids.size, done };
 }
 
@@ -292,6 +297,11 @@ function readDoc(file, kind) {
   const title = h1?.line.match(/^# (.+?)\s*#*\s*$/)?.[1];
   if (!title) errors.push(`${rel(file)}: the first line after the frontmatter must be the "# Title" heading`);
   checkLinks(file, prose);
+  if (kind === "feature") {
+    const sections = prose.filter(({ line }) => /^## /.test(line));
+    if (sections.at(-1)?.line.trim() !== "## Testing Expectations")
+      errors.push(`${rel(file)}: feature.md must end with a "## Testing Expectations" section`);
+  }
   const progress = kind === "plan" ? checkDeliverables(file, prose) : null;
   return { data, title: title ?? "Untitled", progress };
 }
@@ -307,6 +317,7 @@ if (existsSync(featuresDir)) {
   for (const name of readdirSync(featuresDir).sort()) {
     const dir = join(featuresDir, name);
     if (statSync(dir).isDirectory()) {
+      if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(name)) errors.push(`${rel(dir)}: feature folder names are kebab-case`);
       const featureMd = join(dir, "feature.md");
       const planMd = join(dir, "plan.md");
       for (const file of markdownUnder(dir))
@@ -350,6 +361,12 @@ if (existsSync(docsDir)) {
   for (const name of readdirSync(docsDir).sort()) {
     const path = join(docsDir, name);
     if (statSync(path).isDirectory()) {
+      if (name === "reviews") {
+        for (const file of markdownUnder(path))
+          if (dirname(file) !== path || !/^\d{4}-\d{2}-\d{2}-[a-z0-9]+(-[a-z0-9]+)*\.md$/.test(file.slice(path.length + 1)))
+            errors.push(`${rel(file)}: reviews are named docs/reviews/YYYY-MM-DD-<name>.md`);
+        continue;
+      }
       if (WORKFLOW_DIRS.has(name)) continue;
       for (const file of markdownUnder(path))
         errors.push(`${rel(file)}: not a workflow location; documents live in docs/features/<name>/ (feature.md, plan.md)`);
