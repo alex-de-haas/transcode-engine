@@ -171,7 +171,13 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
 
     private async Task<JobDescriptor> CreateCoreAsync(TranscodeJobRequest request, CancellationToken cancellationToken)
     {
-        var source = request.IsJoin || request.Bluray is not null ? default : await ProbeSourceAsync(request.InputPath, cancellationToken);
+        var source = request.IsJoin || request.Bluray is not null ? default : await ProbeSourceAsync(request.InputPath, cancellationToken, request.VideoStreamIndex);
+        if (request.VideoStreamIndex is not null)
+        {
+            var selectionStreams = await ProbeStreamsAsync(request.InputPath, cancellationToken);
+            if (VideoSelectionError(request, selectionStreams) is { } selectionError)
+                throw new ArgumentException(selectionError);
+        }
         var duration = source.DurationSeconds;
         var inputSize = TryFileLength(request.InputPath);
 
@@ -762,7 +768,7 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
         else
         {
             args.Add("-map");
-            args.Add("0:v:0");
+            args.Add(request.VideoStreamIndex is { } videoIndex ? $"0:{videoIndex}" : "0:v:0");
         }
 
         // Subtitles (and the attachment fonts that ASS subs render with) only when the output is Matroska:
@@ -807,12 +813,22 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
             args.Add("copy");
         }
 
+        if (request.VideoStreamIndex is not null)
+        {
+            // An explicit no-op preserves copied dispositions and disables ffmpeg's automatic default
+            // assignment when the selected subset omits the input's default track.
+            if (!request.ConvertsDolbyVision) args.AddRange(["-disposition:v", "+0"]);
+            if (audio.Count > 0) args.AddRange(["-disposition:a", "+0"]);
+            if (keepSubtitles && subtitles.Count > 0) args.AddRange(["-disposition:s", "+0"]);
+        }
         AddDefaultDisposition(args, "a", audio, request.DefaultAudioStreamIndex);
         if (keepSubtitles)
         {
             AddDefaultDisposition(args, "s", subtitles, request.DefaultSubtitleStreamIndex);
         }
 
+        if (!request.ConvertsDolbyVision && request.VideoStreamIndex is { } videoIndexForMetadata)
+            AddMetadataOverrides(args, "v", [new MappedStream(0, videoIndexForMetadata)], request.MetadataOverrides);
         AddMetadataOverrides(args, "a", audio, request.MetadataOverrides);
         if (keepSubtitles)
         {
@@ -900,7 +916,20 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
     /// <summary>One stream of the input as the create-time probe reports it. <see cref="Kind"/> is ffprobe's
     /// <c>codec_type</c> (<c>video</c>/<c>audio</c>/<c>subtitle</c>) and <see cref="Codec"/> its
     /// <c>codec_name</c>.</summary>
-    internal sealed record ProbedStream(int Index, string Kind, string Codec);
+    internal static string? VideoSelectionError(TranscodeJobRequest request, IReadOnlyList<ProbedStream> streams)
+    {
+        if (request.VideoStreamIndex is not { } index) return null;
+        if (request.IsExtraction || request.IsJoin || request.Bluray is not null)
+            return "Explicit video selection is only supported for composed jobs.";
+        if (!streams.Any(s => s.Index == index && s.Kind == "video"))
+            return "The selected video stream could not be verified in the input.";
+        if (request.AudioStreamIndexes?.Any(i => !streams.Any(s => s.Index == i && s.Kind == "audio")) == true ||
+            request.SubtitleStreamIndexes?.Any(i => !streams.Any(s => s.Index == i && s.Kind == "subtitle")) == true)
+            return "Selected audio/subtitle indexes must match their stream types in the input.";
+        return null;
+    }
+
+    internal sealed record ProbedStream(int Index, string Kind, string Codec, bool AttachedPicture = false);
 
     /// <summary>Subtitle codecs that are pictures rather than text. They cannot become an <c>.srt</c> by any
     /// route ffmpeg offers — turning one into text is OCR, a different mechanism with a different dependency
@@ -1351,7 +1380,7 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
                 args.Add($"language={language}");
             }
 
-            if (match.Title is { Length: > 0 } title)
+            if (match.Title is { } title)
             {
                 args.Add($"-metadata:s:{kind}:{position}");
                 args.Add($"title={title}");
@@ -1469,7 +1498,9 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
         string? VideoLanguage = null,
         string? VideoTitle = null,
         DolbyVisionRecord? DolbyVision = null,
-        bool HasVideoStream = false)
+        bool HasVideoStream = false,
+        bool? VideoDefault = null,
+        bool? VideoForced = null)
     {
         /// <summary>Whether ffprobe answered at all. A probe that timed out or could not read the file
         /// reports nothing, and a check that cannot be made must not fail a job; a probe that answered and
@@ -1488,7 +1519,7 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
         bool ElPresent,
         bool BlPresent);
 
-    private async Task<SourceProbe> ProbeSourceAsync(string inputPath, CancellationToken cancellationToken)
+    private async Task<SourceProbe> ProbeSourceAsync(string inputPath, CancellationToken cancellationToken, int? videoStreamIndex = null)
     {
         // Bound the probe so a FIFO/special file or a blocked read can't hang CreateAsync forever.
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -1507,13 +1538,13 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
             foreach (var arg in new[]
             {
                 "-v", "quiet",
-                // Only the primary video stream matters (BuildArguments maps 0:v:0); -select_streams does not
+                // Probe the explicitly selected video, or the legacy first video; -select_streams does not
                 // touch the format section, so the duration still comes back. Beside pix_fmt, the frame rate,
                 // the language/title tags and the Dolby Vision record serve a conversion, which rebuilds the
                 // video track from an elementary stream that carries none of them.
-                "-select_streams", "v:0",
+                "-select_streams", videoStreamIndex?.ToString(CultureInfo.InvariantCulture) ?? "v:0",
                 "-show_entries",
-                "format=duration:stream=codec_type,pix_fmt,r_frame_rate:stream_tags=language,title:" +
+                "format=duration:stream=codec_type,pix_fmt,r_frame_rate:stream_tags=language,title:stream_disposition=default,forced:" +
                 "stream_side_data=dv_profile,dv_level,rpu_present_flag,el_present_flag,bl_present_flag,dv_bl_signal_compatibility_id",
                 // Keys are kept (no nokey=1): the entries live in different sections, so the output is parsed
                 // by name rather than by line order. Tags arrive as TAG:language=...; side data keys as they are.
@@ -1575,6 +1606,8 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
         var el = false;
         var bl = false;
         var hasVideo = false;
+        bool? videoDefault = null;
+        bool? videoForced = null;
         foreach (var line in stdout.Split('\n'))
         {
             var separator = line.IndexOf('=');
@@ -1590,6 +1623,8 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
                 case "duration" when double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var seconds):
                     duration = seconds;
                     break;
+                case "DISPOSITION:default": videoDefault = value == "1"; break;
+                case "DISPOSITION:forced": videoForced = value == "1"; break;
                 case "pix_fmt" when value.Length > 0 && value != "unknown":
                     pixelFormat = value;
                     break;
@@ -1636,7 +1671,7 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
             language,
             title,
             dvProfile is { } dv ? new DolbyVisionRecord(dv, dvLevel, dvCompatibility, rpu, el, bl) : null,
-            hasVideo);
+            hasVideo, videoDefault, videoForced);
     }
 
     /// <summary>
@@ -1664,7 +1699,7 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
             foreach (var arg in new[]
             {
                 "-v", "quiet",
-                "-show_entries", "stream=index,codec_type,codec_name",
+                "-show_entries", "stream=index,codec_type,codec_name:stream_disposition=attached_pic",
                 // JSON rather than the flat key=value form the duration probe uses: with several streams the
                 // flat output gives no reliable boundary between them.
                 "-of", "json",
@@ -1731,7 +1766,9 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
                     continue;
                 }
 
-                result.Add(new ProbedStream(index.GetInt32(), Text(stream, "codec_type"), Text(stream, "codec_name")));
+                var attachedPicture = stream.TryGetProperty("disposition", out var disposition) && disposition.ValueKind == JsonValueKind.Object &&
+                    disposition.TryGetProperty("attached_pic", out var attached) && attached.ValueKind == JsonValueKind.Number && attached.GetInt32() != 0;
+                result.Add(new ProbedStream(index.GetInt32(), Text(stream, "codec_type"), Text(stream, "codec_name"), attachedPicture));
             }
 
             return result;

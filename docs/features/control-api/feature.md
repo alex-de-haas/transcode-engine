@@ -1,7 +1,7 @@
 # Control API
 
 Created: 2026-07-03
-Updated: 2026-09-04
+Updated: 2026-10-12
 
 ## Description
 
@@ -51,6 +51,7 @@ Body (`CreateJobRequest`). `inputPath` is required, and so is exactly one of
 | `outputs` | object[]? | Writes each named stream to its own file instead of composing one — an **extraction**. `{ mountLabel?, path, streamIndex, codec?, language?, title? }`, `codec` being `copy` (default), `srt`, `ass` or `webvtt`. Naming any makes every other field in this table invalid — except `outputMountLabel`, which stays the default mount for entries that name none — since the rest all describe a composed output. See [Extract Jobs](../extract-jobs/feature.md). |
 | `inputMountLabel` | string? | Selects the media mount the input resolves against. Required when several mounts are configured; optional with exactly one. See [Media mounts](../media-mounts.md). |
 | `outputMountLabel` | string? | Media mount for the output — for an extraction, the default mount for every entry in `outputs` that names none. Defaults to `inputMountLabel` when omitted. |
+| `videoStreamIndex` | int? | Absolute primary-input video index for composed jobs. Omission keeps the first video; explicit selection is probed and validated. See [Video selection](../video-selection/feature.md). |
 | `videoCodec` | string? | `h264`, `hevc` (default), or `copy` (remux the video untouched). Aliases: `h265`/`x265` → hevc, `avc`/`x264` → h264. **Defaults to `copy` on a merge** — see `additionalInputs`. |
 | `hardwareAcceleration` | string? | `auto` (default), `vaapi`, `videotoolbox`, `amf`, or `none`. A choice the host can't satisfy falls back to software — including a 10-bit HEVC job on a VAAPI device whose encoder is Main-only. See [Hardware acceleration](../hardware-acceleration/feature.md). |
 | `qualityLevel` | string? | `highest`, `high` (default), `balanced`, or `small`. Encoder-independent: the engine maps it onto whichever family the host reaches, so the same level means the same picture everywhere. See [Compression controls](../compression-controls/feature.md). |
@@ -159,6 +160,7 @@ a consumer can surface what the host actually offers:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
+| `explicitVideoSelection` | bool | Supports explicit video mapping, names and selected-video Dolby Vision rewriting. Older engines omit this capability. |
 | `vaapiAvailable` | bool | A VAAPI render node is visible in the container (the `/dev/dri` passthrough worked). |
 | `vaapiDevice` | string? | The render node that would be used (`VAAPI_DEVICE` if it exists, else the first discovered node). |
 | `renderDevices` | string[] | All `/dev/dri/renderD*` nodes visible. |

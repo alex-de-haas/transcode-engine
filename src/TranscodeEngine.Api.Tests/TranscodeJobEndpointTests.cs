@@ -20,6 +20,31 @@ namespace TranscodeEngine.Api.Tests;
 /// </summary>
 public sealed class TranscodeJobEndpointTests
 {
+    [Theory]
+    [InlineData(-1, false, HttpStatusCode.BadRequest)]
+    [InlineData(3, false, HttpStatusCode.OK)]
+    [InlineData(3, true, HttpStatusCode.BadRequest)]
+    public async Task Post_ExplicitVideo_MapsNameAndRejectsUnselectedMetadata(int index, bool excluded, HttpStatusCode expected)
+    {
+        var media = MediaWith("in.mkv");
+        var imposter = ITranscodeEngine.Imposter();
+        TranscodeJobRequest? captured = null;
+        imposter.CreateAsync(Arg<TranscodeJobRequest>.Any(), Arg<CancellationToken>.Any())
+            .Returns((TranscodeJobRequest request, CancellationToken _) => { captured = request; return Task.FromResult(Descriptor); });
+        var (client, app) = await HostAsync(Settings($"media={media}"), imposter.Instance());
+        await using var _ = app;
+        var response = await client.PostAsJsonAsync("/jobs", new {
+            inputPath = "in.mkv", outputPath = "out.mkv", videoCodec = "copy", videoStreamIndex = index,
+            audioStreamIndexes = new[] { 1 }, subtitleStreamIndexes = Array.Empty<int>(),
+            metadataOverrides = new[] { new { input = 0, streamIndex = excluded ? 7 : index, title = "Picture" } },
+        });
+        Assert.Equal(expected, response.StatusCode);
+        if (expected == HttpStatusCode.OK) {
+            Assert.Equal(3, captured!.VideoStreamIndex);
+            Assert.Equal("Picture", Assert.Single(captured.MetadataOverrides!).Title);
+        }
+    }
+
     private static readonly JobDescriptor Descriptor = new("job1", "/media/in.mkv", "/media/out.mkv", 120, 1000);
 
     private static TranscodeEngineSettings Settings(string raw) =>

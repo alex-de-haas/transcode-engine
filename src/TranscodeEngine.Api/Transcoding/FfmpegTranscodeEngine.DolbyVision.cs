@@ -170,8 +170,9 @@ public sealed partial class FfmpegTranscodeEngine
     /// drifts a minute over two hours — and no tags, so the source's language and title are put back.
     /// mkvmerge reads the RPU and writes the Matroska Dolby Vision mapping itself.
     /// </summary>
-    internal static List<string> BuildMkvmergeArguments(string destination, string convertedLayer, string? tracks, SourceProbe source)
+    internal static List<string> BuildMkvmergeArguments(string destination, string convertedLayer, string? tracks, SourceProbe source, StreamMetadataOverride? videoMetadata = null)
     {
+        source = source with { VideoTitle = videoMetadata?.Title ?? source.VideoTitle, VideoLanguage = videoMetadata?.Language ?? source.VideoLanguage };
         var args = new List<string> { "--output", destination };
         if (source.VideoFrameRate is { Length: > 0 } frameRate)
         {
@@ -191,6 +192,8 @@ public sealed partial class FfmpegTranscodeEngine
             args.Add($"0:{title}");
         }
 
+        if (source.VideoDefault is { } isDefault) args.AddRange(["--default-track-flag", $"0:{(isDefault ? 1 : 0)}"]);
+        if (source.VideoForced is { } isForced) args.AddRange(["--forced-display-flag", $"0:{(isForced ? 1 : 0)}"]);
         args.Add(convertedLayer);
         if (tracks is not null)
         {
@@ -269,7 +272,14 @@ public sealed partial class FfmpegTranscodeEngine
     /// ffprobe and not tracks to mkvmerge — so it is asked rather than assumed. Null when there is none or
     /// the document cannot be read. A byte-order mark or whitespace ahead of the document is skipped rather
     /// than counted as a document that cannot be read.</summary>
-    internal static int? ParseVideoTrackId(string identifyJson)
+    internal static (int Ordinal, int Count) VideoTrackPosition(IReadOnlyList<ProbedStream> streams, int index)
+    {
+        // Matroska cover attachments appear as ffprobe video streams, but have no MKVToolNix track ID.
+        var videos = streams.Where(s => s.Kind == "video" && !s.AttachedPicture).ToList();
+        return (videos.FindIndex(s => s.Index == index), videos.Count);
+    }
+
+    internal static int? ParseVideoTrackId(string identifyJson, int videoOrdinal = 0, int? expectedVideoCount = null)
     {
         try
         {
@@ -284,7 +294,11 @@ public sealed partial class FfmpegTranscodeEngine
                 return null;
             }
 
-            foreach (var track in tracks.EnumerateArray())
+            var videos = tracks.EnumerateArray().Where(track => track.ValueKind == JsonValueKind.Object &&
+                track.TryGetProperty("type", out var kind) && kind.ValueKind == JsonValueKind.String &&
+                string.Equals(kind.GetString(), "video", StringComparison.OrdinalIgnoreCase)).ToList();
+            if (expectedVideoCount is { } count && videos.Count != count) return null;
+            foreach (var track in videos.Skip(videoOrdinal))
             {
                 if (track.ValueKind == JsonValueKind.Object &&
                     track.TryGetProperty("type", out var type) && type.ValueKind == JsonValueKind.String &&
@@ -351,7 +365,10 @@ public sealed partial class FfmpegTranscodeEngine
                 return;
             }
 
-            var trackId = await IdentifyVideoTrackAsync(request.InputPath, cancellationToken);
+            var position = request.VideoStreamIndex is { } index
+                ? VideoTrackPosition(await ProbeStreamsAsync(request.InputPath, cancellationToken), index) : (Ordinal: 0, Count: 0);
+            var trackId = position.Ordinal < 0 ? null : await IdentifyVideoTrackAsync(request.InputPath, cancellationToken,
+                position.Ordinal, request.VideoStreamIndex is not null ? position.Count : null);
             if (trackId is null)
             {
                 FailDolbyVisionJob(job, "mkvmerge could not identify a video track in the input.", stderrTail);
@@ -416,7 +433,8 @@ public sealed partial class FfmpegTranscodeEngine
             // 4. The output, assembled by mkvmerge. Exit code 1 is "finished with warnings" and still wrote
             // the file; only 2 is an error.
             var mux = ToolProcess(_settings.MkvmergePath);
-            foreach (var arg in BuildMkvmergeArguments(finalTemp, temps.ConvertedLayer, tracks, job.Source))
+            foreach (var arg in BuildMkvmergeArguments(finalTemp, temps.ConvertedLayer, tracks, job.Source,
+                request.MetadataOverrides?.FirstOrDefault(m => m.Input == 0 && m.StreamIndex == request.VideoStreamIndex)))
             {
                 mux.ArgumentList.Add(arg);
             }
@@ -698,7 +716,7 @@ public sealed partial class FfmpegTranscodeEngine
     /// <summary>Asks <c>mkvmerge --identify</c> for the input's video track id. Bounded and best-effort like
     /// every probe here: null when it cannot answer, which fails the job with a reason rather than guessing
     /// a track.</summary>
-    private async Task<int?> IdentifyVideoTrackAsync(string inputPath, CancellationToken cancellationToken)
+    private async Task<int?> IdentifyVideoTrackAsync(string inputPath, CancellationToken cancellationToken, int videoOrdinal = 0, int? expectedVideoCount = null)
     {
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(IdentifyTimeout);
@@ -723,7 +741,7 @@ public sealed partial class FfmpegTranscodeEngine
                 var stdout = await process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
                 await process.WaitForExitAsync(timeoutCts.Token);
                 var errors = await stderr;
-                var trackId = ParseVideoTrackId(stdout);
+                var trackId = ParseVideoTrackId(stdout, videoOrdinal, expectedVideoCount);
                 if (trackId is null)
                 {
                     // The one answer that used to be silent: what mkvmerge actually said, so the next failure

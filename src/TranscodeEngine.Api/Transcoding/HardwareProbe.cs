@@ -1,7 +1,7 @@
 namespace TranscodeEngine.Api.Transcoding;
 
 /// <summary>Best-effort report of the hardware the engine can use, surfaced at <c>GET /hardware</c>. This is
-/// informational only (a consumer can show what the host offers); it is not a correctness gate.</summary>
+/// informational for hardware; explicit workflow capabilities let consumers gate versioned contracts.</summary>
 /// <param name="VaapiAvailable">Whether a VAAPI render node is present (the manifest's <c>/dev/dri</c>
 /// passthrough worked and the host exposes a render device).</param>
 /// <param name="VaapiDevice">The configured render node, when present.</param>
@@ -21,7 +21,8 @@ public sealed record HardwareStatus(
     bool AmfAvailable,
     DateTimeOffset CheckedAt,
     ToolingStatus? Tools = null,
-    bool VideoPartJoining = true);
+    bool VideoPartJoining = true,
+    bool ExplicitVideoSelection = true);
 
 /// <summary>Inspects the passed-through DRI devices to report VAAPI availability without spawning a process.</summary>
 public static class HardwareProbe

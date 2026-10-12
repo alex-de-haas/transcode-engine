@@ -47,7 +47,8 @@ public sealed record CreateJobRequest(
     IReadOnlyList<StreamMetadataOverrideRequest>? MetadataOverrides = null,
     IReadOnlyList<AudioTargetRequest>? AudioTargets = null,
     IReadOnlyList<OutputRequest>? Outputs = null,
-    string? DolbyVision = null);
+    string? DolbyVision = null,
+    int? VideoStreamIndex = null);
 
 /// <summary>
 /// One stream of the input written out as its own file — how an extraction is expressed. The path resolves
