@@ -20,6 +20,31 @@ namespace TranscodeEngine.Api.Tests;
 /// </summary>
 public sealed class TranscodeJobEndpointTests
 {
+    [Theory]
+    [InlineData(-1, false, HttpStatusCode.BadRequest)]
+    [InlineData(3, false, HttpStatusCode.OK)]
+    [InlineData(3, true, HttpStatusCode.BadRequest)]
+    public async Task Post_ExplicitVideo_MapsNameAndRejectsUnselectedMetadata(int index, bool excluded, HttpStatusCode expected)
+    {
+        var media = MediaWith("in.mkv");
+        var imposter = ITranscodeEngine.Imposter();
+        TranscodeJobRequest? captured = null;
+        imposter.CreateAsync(Arg<TranscodeJobRequest>.Any(), Arg<CancellationToken>.Any())
+            .Returns((TranscodeJobRequest request, CancellationToken _) => { captured = request; return Task.FromResult(Descriptor); });
+        var (client, app) = await HostAsync(Settings($"media={media}"), imposter.Instance());
+        await using var _ = app;
+        var response = await client.PostAsJsonAsync("/jobs", new {
+            inputPath = "in.mkv", outputPath = "out.mkv", videoCodec = "copy", videoStreamIndex = index,
+            audioStreamIndexes = new[] { 1 }, subtitleStreamIndexes = Array.Empty<int>(),
+            metadataOverrides = new[] { new { input = 0, streamIndex = excluded ? 7 : index, title = "Picture" } },
+        });
+        Assert.Equal(expected, response.StatusCode);
+        if (expected == HttpStatusCode.OK) {
+            Assert.Equal(3, captured!.VideoStreamIndex);
+            Assert.Equal("Picture", Assert.Single(captured.MetadataOverrides!).Title);
+        }
+    }
+
     private static readonly JobDescriptor Descriptor = new("job1", "/media/in.mkv", "/media/out.mkv", 120, 1000);
 
     private static TranscodeEngineSettings Settings(string raw) =>
@@ -545,13 +570,20 @@ public sealed class TranscodeJobEndpointTests
         Assert.Contains("balanced", error);
     }
 
-    [Fact]
-    public async Task Post_OverrideWithOnlyEmptyValues_ReturnsBadRequest()
+    [Theory]
+    [InlineData("", "  ", HttpStatusCode.BadRequest)]
+    [InlineData("   ", "", HttpStatusCode.BadRequest)]
+    [InlineData("   ", "Picture", HttpStatusCode.BadRequest)]
+    [InlineData("eng", "  ", HttpStatusCode.BadRequest)]
+    [InlineData("", "", HttpStatusCode.OK)]
+    [InlineData(null, "", HttpStatusCode.OK)]
+    public async Task Post_OverrideDistinguishesTitleClearingFromWhitespace(string? language, string title, HttpStatusCode expected)
     {
-        // Argument construction emits a field only when it has content, so accepting "" would report a
-        // successful job that changes nothing.
+        // Empty titles clear the tag; empty languages retain it. Whitespace is never a metadata value.
         var media = MediaWith("in.mkv");
-        var (client, app) = await HostAsync(Settings($"media={media}"), ITranscodeEngine.Imposter().Instance());
+        var imposter = ITranscodeEngine.Imposter();
+        imposter.CreateAsync(Arg<TranscodeJobRequest>.Any(), Arg<CancellationToken>.Any()).Returns(Task.FromResult(Descriptor));
+        var (client, app) = await HostAsync(Settings($"media={media}"), imposter.Instance());
         await using var _ = app;
 
         var response = await client.PostAsJsonAsync("/jobs", new
@@ -560,11 +592,12 @@ public sealed class TranscodeJobEndpointTests
             inputPath = "in.mkv",
             outputPath = "out.mkv",
             audioStreamIndexes = new[] { 1 },
-            metadataOverrides = new[] { new { input = 0, streamIndex = 1, language = "", title = "  " } },
+            metadataOverrides = new[] { new { input = 0, streamIndex = 1, language, title } },
         });
 
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Contains("language or a title", (await response.Content.ReadFromJsonAsync<ErrorBody>())!.Error);
+        Assert.Equal(expected, response.StatusCode);
+        if (expected == HttpStatusCode.BadRequest)
+            Assert.Contains("language or a title", (await response.Content.ReadFromJsonAsync<ErrorBody>())!.Error);
     }
 
     [Fact]

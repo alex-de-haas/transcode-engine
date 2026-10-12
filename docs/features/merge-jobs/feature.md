@@ -1,6 +1,6 @@
 ---
 created: 2026-07-27
-updated: 2026-07-29
+updated: 2026-10-12
 summary: Jobs that fold sidecar dubs and subtitles into a video and can rewrite stream languages and titles.
 ---
 
@@ -90,11 +90,11 @@ output is refused rather than silently dropped.
 Overrides apply to **any** job, a plain transcode as well as a merge.
 
 A field left `null` is not written at all, so the source stream's own tag survives:
-relabelling one track never freezes the others' metadata. Nothing here is allowed
+relabelling one track never freezes the others' metadata. An empty title explicitly clears the name. Video overrides require an explicit
+`videoStreamIndex`; see [Video selection](../video-selection/feature.md). Nothing here is allowed
 to be a silent no-op, so an override is refused when it:
 
-- sets neither value — including when both are empty or whitespace, which argument
-  construction would skip;
+- sets neither value, or supplies nonempty whitespace only;
 - names a stream the job does not map explicitly;
 - repeats a stream another override already names, since only one could be applied;
 - targets an **appended** track while the primary selection of that type is left

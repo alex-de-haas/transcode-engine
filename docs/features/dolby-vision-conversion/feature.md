@@ -1,6 +1,6 @@
 ---
 created: 2026-09-04
-updated: 2026-09-04
+updated: 2026-10-12
 summary: Video-copy jobs rewrite dual-layer Dolby Vision profile 7 into single-layer profile 8.1, and the probe reports the profile.
 ---
 
@@ -17,6 +17,11 @@ rewritten, and the enhancement layer — measured at 1.6 % of such a file in
 
 Consumer: media-server's
 [dolby-vision-profile](https://github.com/alex-de-haas/media-server/blob/main/docs/features/dolby-vision-profile/plan.md).
+
+Explicit `videoStreamIndex` follows the selected video through source probing,
+MKVToolNix identification, extraction and final mux. The final mux restores that
+video's Default/Forced flags and applies its metadata override. Without an explicit
+index, legacy first-video behavior remains. See [Video selection](../video-selection/feature.md).
 
 ## The probe reports the record
 

@@ -193,5 +193,6 @@ Plans: 1 In Progress.
 - [Probe API](features/probe-api/feature.md) — POST /probe returns a normalized description of a media file's container and streams.
 - [Transcode Engine](features/transcode-engine/feature.md) — The ffmpeg engine wrapper, its worker pool, in-memory job state and event mapping.
 - [Video Part Joining](features/video-part-joining/feature.md) — Join two ordered video parts into one Matroska output through POST /jobs/join.
+- [Explicit Video Selection](features/video-selection/feature.md) — Exact video track selection and metadata preservation for remux, conversion and Dolby Vision jobs.
 
 <!-- docs-index:end -->

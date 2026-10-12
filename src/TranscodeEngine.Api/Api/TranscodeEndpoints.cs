@@ -90,6 +90,9 @@ public static class TranscodeEndpoints
                 qualityLevel = parsedLevel;
             }
 
+            if (request.VideoStreamIndex is < 0)
+                return Results.BadRequest(new { error = "videoStreamIndex must be non-negative." });
+
             if (request.MaxHeight is not null and (< 16 or > 4320))
             {
                 return Results.BadRequest(new { error = "maxHeight must be between 16 and 4320." });
@@ -276,7 +279,8 @@ public static class TranscodeEndpoints
                 resolvedInputs.Count > 0 ? resolvedInputs : null,
                 request.MetadataOverrides?.Select(o => new StreamMetadataOverride(o.Input, o.StreamIndex, o.Language, o.Title)).ToList(),
                 audioTargets,
-                DolbyVision: dolbyVision);
+                DolbyVision: dolbyVision,
+                VideoStreamIndex: request.VideoStreamIndex);
 
             // The engine refuses what only the probed input can tell — a Dolby Vision conversion of a source
             // that is not profile 7 — as an ArgumentException, which is the same 400 as every rule above.
@@ -540,6 +544,8 @@ public static class TranscodeEndpoints
             "hardwareAcceleration cannot be set on an extraction: nothing is decoded or encoded. Omit it or pass 'auto'.",
         { AdditionalInputs.Count: > 0 } =>
             "additionalInputs cannot be set on an extraction: it reads one input and composes nothing.",
+        { VideoStreamIndex: not null } =>
+            "videoStreamIndex cannot be set on an extraction.",
         { AudioStreamIndexes: not null } or { SubtitleStreamIndexes: not null } =>
             "audioStreamIndexes and subtitleStreamIndexes select tracks into a composed output; an extraction names its streams in outputs.",
         { DefaultAudioStreamIndex: not null } or { DefaultSubtitleStreamIndex: not null } =>
@@ -611,9 +617,10 @@ public static class TranscodeEndpoints
         var seen = new HashSet<(int Input, int StreamIndex)>();
         foreach (var entry in overrides)
         {
-            // Whitespace is not a value: argument construction emits a field only when it has content, so
-            // accepting "" here would report success for a job that changes nothing.
-            if (string.IsNullOrWhiteSpace(entry.Language) && string.IsNullOrWhiteSpace(entry.Title))
+            // Empty title clears a tag; nonempty whitespace is not a meaningful override.
+            if ((entry.Language is { Length: > 0 } && string.IsNullOrWhiteSpace(entry.Language)) ||
+                (entry.Title is { Length: > 0 } && string.IsNullOrWhiteSpace(entry.Title)) ||
+                (string.IsNullOrEmpty(entry.Language) && entry.Title is null))
             {
                 return "a metadata override must set a language or a title.";
             }
@@ -641,7 +648,7 @@ public static class TranscodeEndpoints
 
             var isAudio = audio?.Contains(entry.StreamIndex) == true;
             var isSubtitle = matroskaOutput && subtitles?.Contains(entry.StreamIndex) == true;
-            if (!isAudio && !isSubtitle)
+            if (!isAudio && !isSubtitle && !(entry.Input == 0 && request.VideoStreamIndex == entry.StreamIndex))
             {
                 return $"metadata override for stream {entry.StreamIndex} of input {entry.Input} must name a stream the job maps explicitly.";
             }
