@@ -38,6 +38,16 @@ public sealed class VideoSelectionTests
         Assert.Null(FfmpegTranscodeEngine.VideoSelectionError(Request(), [new(3, "video", "h264"), new(1, "audio", "aac")]));
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Attached_covers_are_refused_without_rejecting_MJPEG_video(bool copy)
+    {
+        var streams = FfmpegTranscodeEngine.ParseProbedStreams("""{"streams":[{"index":1,"codec_type":"audio","codec_name":"aac"},{"index":3,"codec_type":"video","codec_name":"mjpeg","disposition":{"attached_pic":1}},{"index":4,"codec_type":"video","codec_name":"mjpeg","disposition":{"attached_pic":0}}]}""");
+        Assert.NotNull(FfmpegTranscodeEngine.VideoSelectionError(Request(copy), streams));
+        Assert.Null(FfmpegTranscodeEngine.VideoSelectionError(Request(copy) with { VideoStreamIndex = 4 }, streams));
+    }
+
     [Fact]
     public void Cover_attachments_do_not_shift_the_Matroska_video_identity()
     {

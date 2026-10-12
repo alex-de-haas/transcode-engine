@@ -12,7 +12,8 @@ Omitting it retains legacy `0:v:0` mapping. `GET /hardware` advertises
 `explicitVideoSelection: true`; consumers can refuse unsupported older engines.
 
 The endpoint rejects negative indexes and extraction combinations. Before admitting
-a job, the engine probes and verifies that the selected index is video and explicit
+a job, the engine probes and verifies that the selected index is video without an
+attached-picture disposition and explicit
 audio/subtitle indexes have the requested type. A failed probe cannot silently
 substitute another video. The selected video supplies pixel format and Dolby Vision
 facts; encoding hardware setup never takes them from another stream.

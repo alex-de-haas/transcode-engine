@@ -921,7 +921,7 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
         if (request.VideoStreamIndex is not { } index) return null;
         if (request.IsExtraction || request.IsJoin || request.Bluray is not null)
             return "Explicit video selection is only supported for composed jobs.";
-        if (!streams.Any(s => s.Index == index && s.Kind == "video"))
+        if (!streams.Any(s => s.Index == index && s.Kind == "video" && !s.AttachedPicture))
             return "The selected video stream could not be verified in the input.";
         if (request.AudioStreamIndexes?.Any(i => !streams.Any(s => s.Index == i && s.Kind == "audio")) == true ||
             request.SubtitleStreamIndexes?.Any(i => !streams.Any(s => s.Index == i && s.Kind == "subtitle")) == true)
