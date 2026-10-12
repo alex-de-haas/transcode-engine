@@ -80,6 +80,21 @@ public sealed class VideoSelectionTests
         Assert.DoesNotContain("--track-name", cleared);
     }
 
+    [Theory]
+    [InlineData(null, "New picture")]
+    [InlineData("", "New picture")]
+    [InlineData(null, "")]
+    [InlineData("", "")]
+    public void Dolby_vision_title_edits_preserve_language_when_no_language_override_is_supplied(string? language, string title)
+    {
+        var source = new FfmpegTranscodeEngine.SourceProbe(1, "yuv420p10le", "24/1", "eng", "Old");
+        var args = FfmpegTranscodeEngine.BuildMkvmergeArguments("out.mkv", "video.hevc", null, source,
+            new(0, 3, Language: language, Title: title));
+        Assert.Equal("0:eng", args[args.IndexOf("--language") + 1]);
+        if (title.Length == 0) Assert.DoesNotContain("--track-name", args);
+        else Assert.Equal($"0:{title}", args[args.IndexOf("--track-name") + 1]);
+    }
+
     [Fact]
     public void Dolby_vision_tracks_stage_never_maps_the_selected_video()
     {

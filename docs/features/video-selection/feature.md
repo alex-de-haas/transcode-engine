@@ -20,7 +20,8 @@ facts; encoding hardware setup never takes them from another stream.
 
 `metadataOverrides` can address the explicitly mapped video in input zero. Its
 language/title applies to video output position zero. Empty title clears a tag;
-null retains the source title. Nonempty whitespace-only overrides remain invalid.
+null retains the source title. An empty or omitted language retains the source language,
+including during Dolby Vision conversion. Nonempty whitespace-only fields remain invalid.
 Excluded tracks and ambiguous implicit maps cannot receive metadata overrides.
 
 Explicit-selection jobs preserve existing dispositions using no-op `+0` settings,

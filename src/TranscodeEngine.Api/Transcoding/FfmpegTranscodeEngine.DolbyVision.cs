@@ -172,7 +172,11 @@ public sealed partial class FfmpegTranscodeEngine
     /// </summary>
     internal static List<string> BuildMkvmergeArguments(string destination, string convertedLayer, string? tracks, SourceProbe source, StreamMetadataOverride? videoMetadata = null)
     {
-        source = source with { VideoTitle = videoMetadata?.Title ?? source.VideoTitle, VideoLanguage = videoMetadata?.Language ?? source.VideoLanguage };
+        source = source with
+        {
+            VideoTitle = videoMetadata?.Title ?? source.VideoTitle,
+            VideoLanguage = videoMetadata?.Language is { Length: > 0 } overrideLanguage ? overrideLanguage : source.VideoLanguage,
+        };
         var args = new List<string> { "--output", destination };
         if (source.VideoFrameRate is { Length: > 0 } frameRate)
         {
@@ -267,11 +271,7 @@ public sealed partial class FfmpegTranscodeEngine
     internal static List<string> BuildIdentifyArguments(string inputPath) =>
         ["--output-charset", "UTF-8", "--identification-format", "json", "--identify", inputPath];
 
-    /// <summary>The id of the first video track in <c>mkvmerge --identify</c>'s JSON, which is what mkvextract
-    /// addresses tracks by. ffprobe's stream index is not the same numbering — attachments are streams to
-    /// ffprobe and not tracks to mkvmerge — so it is asked rather than assumed. Null when there is none or
-    /// the document cannot be read. A byte-order mark or whitespace ahead of the document is skipped rather
-    /// than counted as a document that cannot be read.</summary>
+    /// <summary>The selected video's ordinal and total video count, excluding cover attachments.</summary>
     internal static (int Ordinal, int Count) VideoTrackPosition(IReadOnlyList<ProbedStream> streams, int index)
     {
         // Matroska cover attachments appear as ffprobe video streams, but have no MKVToolNix track ID.
@@ -279,6 +279,11 @@ public sealed partial class FfmpegTranscodeEngine
         return (videos.FindIndex(s => s.Index == index), videos.Count);
     }
 
+    /// <summary>The id of the video track at the requested ordinal in <c>mkvmerge --identify</c>'s JSON, which is what mkvextract
+    /// addresses tracks by. ffprobe's stream index is not the same numbering — attachments are streams to
+    /// ffprobe and not tracks to mkvmerge — so it is asked rather than assumed. Null when there is none or
+    /// the document cannot be read. A byte-order mark or whitespace ahead of the document is skipped rather
+    /// than counted as a document that cannot be read.</summary>
     internal static int? ParseVideoTrackId(string identifyJson, int videoOrdinal = 0, int? expectedVideoCount = null)
     {
         try

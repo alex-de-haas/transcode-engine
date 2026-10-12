@@ -618,7 +618,9 @@ public static class TranscodeEndpoints
         foreach (var entry in overrides)
         {
             // Empty title clears a tag; nonempty whitespace is not a meaningful override.
-            if (string.IsNullOrWhiteSpace(entry.Language) && (entry.Title is null || (entry.Title.Length > 0 && string.IsNullOrWhiteSpace(entry.Title))))
+            if ((entry.Language is { Length: > 0 } && string.IsNullOrWhiteSpace(entry.Language)) ||
+                (entry.Title is { Length: > 0 } && string.IsNullOrWhiteSpace(entry.Title)) ||
+                (string.IsNullOrEmpty(entry.Language) && entry.Title is null))
             {
                 return "a metadata override must set a language or a title.";
             }

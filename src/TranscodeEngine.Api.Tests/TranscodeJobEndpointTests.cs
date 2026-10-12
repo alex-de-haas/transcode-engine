@@ -570,13 +570,20 @@ public sealed class TranscodeJobEndpointTests
         Assert.Contains("balanced", error);
     }
 
-    [Fact]
-    public async Task Post_OverrideWithOnlyEmptyValues_ReturnsBadRequest()
+    [Theory]
+    [InlineData("", "  ", HttpStatusCode.BadRequest)]
+    [InlineData("   ", "", HttpStatusCode.BadRequest)]
+    [InlineData("   ", "Picture", HttpStatusCode.BadRequest)]
+    [InlineData("eng", "  ", HttpStatusCode.BadRequest)]
+    [InlineData("", "", HttpStatusCode.OK)]
+    [InlineData(null, "", HttpStatusCode.OK)]
+    public async Task Post_OverrideDistinguishesTitleClearingFromWhitespace(string? language, string title, HttpStatusCode expected)
     {
-        // Argument construction emits a field only when it has content, so accepting "" would report a
-        // successful job that changes nothing.
+        // Empty titles clear the tag; empty languages retain it. Whitespace is never a metadata value.
         var media = MediaWith("in.mkv");
-        var (client, app) = await HostAsync(Settings($"media={media}"), ITranscodeEngine.Imposter().Instance());
+        var imposter = ITranscodeEngine.Imposter();
+        imposter.CreateAsync(Arg<TranscodeJobRequest>.Any(), Arg<CancellationToken>.Any()).Returns(Task.FromResult(Descriptor));
+        var (client, app) = await HostAsync(Settings($"media={media}"), imposter.Instance());
         await using var _ = app;
 
         var response = await client.PostAsJsonAsync("/jobs", new
@@ -585,11 +592,12 @@ public sealed class TranscodeJobEndpointTests
             inputPath = "in.mkv",
             outputPath = "out.mkv",
             audioStreamIndexes = new[] { 1 },
-            metadataOverrides = new[] { new { input = 0, streamIndex = 1, language = "", title = "  " } },
+            metadataOverrides = new[] { new { input = 0, streamIndex = 1, language, title } },
         });
 
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Contains("language or a title", (await response.Content.ReadFromJsonAsync<ErrorBody>())!.Error);
+        Assert.Equal(expected, response.StatusCode);
+        if (expected == HttpStatusCode.BadRequest)
+            Assert.Contains("language or a title", (await response.Content.ReadFromJsonAsync<ErrorBody>())!.Error);
     }
 
     [Fact]

@@ -913,9 +913,7 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
         _ => throw new ArgumentOutOfRangeException(nameof(codec)),
     };
 
-    /// <summary>One stream of the input as the create-time probe reports it. <see cref="Kind"/> is ffprobe's
-    /// <c>codec_type</c> (<c>video</c>/<c>audio</c>/<c>subtitle</c>) and <see cref="Codec"/> its
-    /// <c>codec_name</c>.</summary>
+    /// <summary>Validates explicit selections against the probed input stream types and dispositions.</summary>
     internal static string? VideoSelectionError(TranscodeJobRequest request, IReadOnlyList<ProbedStream> streams)
     {
         if (request.VideoStreamIndex is not { } index) return null;
@@ -929,6 +927,9 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
         return null;
     }
 
+    /// <summary>One stream of the input as the create-time probe reports it. <see cref="Kind"/> is ffprobe's
+    /// <c>codec_type</c> (<c>video</c>/<c>audio</c>/<c>subtitle</c>) and <see cref="Codec"/> its
+    /// <c>codec_name</c>.</summary>
     internal sealed record ProbedStream(int Index, string Kind, string Codec, bool AttachedPicture = false);
 
     /// <summary>Subtitle codecs that are pictures rather than text. They cannot become an <c>.srt</c> by any
