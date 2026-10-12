@@ -1,7 +1,10 @@
-# Explicit Video Selection
+---
+created: 2026-10-12
+updated: 2026-10-12
+summary: Exact video track selection and metadata preservation for remux, conversion and Dolby Vision jobs.
+---
 
-Created: 2026-10-12
-Updated: 2026-10-12
+# Explicit Video Selection
 
 `POST /jobs` accepts optional `videoStreamIndex`: an absolute stream index in the
 primary input. It applies to composed remux, encode and Dolby Vision rewrite jobs.

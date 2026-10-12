@@ -1,7 +1,10 @@
-# Consumer Integration
+---
+created: 2026-07-03
+updated: 2026-08-07
+summary: How a consumer app declares the engine as a dependency, discovers it, shares media mounts and tolerates its absence.
+---
 
-Created: 2026-07-03
-Updated: 2026-08-07
+# Consumer Integration
 
 ## Description
 
@@ -50,7 +53,7 @@ if writing elsewhere, `outputMountLabel`) on `POST /jobs`. The engine resolves t
 relative input/output paths against the root under that label, so the job lands on the
 filesystem the consumer's library lives on. The label is the only key shared across
 the two apps — Hosty configures each app's mounts independently. See
-[Media mounts](../media-mounts.md) for the full contract.
+[Media mounts](../media-mounts/feature.md) for the full contract.
 
 ## Driving off remote events
 
@@ -111,4 +114,4 @@ expose the control port publicly.
 The cross-app wiring (dependency resolution, the injected URL, mount-label sharing) is
 validated at the Hosty runtime level on the consumer side, not by this app's unit
 tests. On the engine side, the control API and mount-label contracts consumers rely on
-are covered by [Control API](../control-api/feature.md) and [Media mounts](../media-mounts.md) tests.
+are covered by [Control API](../control-api/feature.md) and [Media mounts](../media-mounts/feature.md) tests.

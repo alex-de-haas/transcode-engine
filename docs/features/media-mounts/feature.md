@@ -1,8 +1,10 @@
-# Media Mounts and Path Resolution
+---
+created: 2026-07-03
+updated: 2026-10-05
+summary: Labelled media mounts route each job's input and output onto the filesystem the consumer shares, with safe path resolution.
+---
 
-Status: Implemented
-Created: 2026-07-03
-Updated: 2026-07-03
+# Media Mounts and Path Resolution
 
 ## Description
 
@@ -103,4 +105,4 @@ Backend tests use xUnit and Imposter. Required coverage
   relative path joined under the root, blank path rejected, and `../` traversal
   outside the root rejected.
 - The endpoint-level checks (input-exists, output ≠ input, unknown label surfaced as
-  `400`) are covered in [Control API](control-api/feature.md).
+  `400`) are covered in [Control API](../control-api/feature.md).

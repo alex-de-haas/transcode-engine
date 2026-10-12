@@ -1,7 +1,10 @@
-# Hosty Runtime App
+---
+created: 2026-07-03
+updated: 2026-09-17
+summary: The Hosty manifest, runtime profiles, devices, settings, app data and telemetry.
+---
 
-Created: 2026-07-03
-Updated: 2026-09-17
+# Hosty Runtime App
 
 ## Description
 
@@ -26,7 +29,7 @@ A single `engine` service with **four** runtime profiles (`defaultRuntime: docke
 | `…runtimes.dev` | Editable native source, `development: true`, restore followed by noninteractive `dotnet watch`; Core assigns the control port. |
 | `endpoints` | `control` → the `engine` service's `control` port; the consumer-facing HTTP surface. |
 | `data` | Enabled; `/app/data` (docker) / the app data dir (local/dev) is exposed as `HOSTY_APP_DATA_DIR` and covered by backup/restore. |
-| `externalMounts.media` | `host-path`, `multiple`, `rw`, `required` — one host path per catalog filesystem (see [Media mounts](../media-mounts.md)). |
+| `externalMounts.media` | `host-path`, `multiple`, `rw`, `required` — one host path per catalog filesystem (see [Media mounts](../media-mounts/feature.md)). |
 | `settings` | `HWACCEL`, `VAAPI_DEVICE`, `MAX_CONCURRENT_JOBS` (see below). |
 | `telemetry` | `{ enabled: true, sampleRatio: 0.1 }` — opt-in observability (see [Telemetry](#telemetry)). |
 | `capabilities` | `backup`, `logs`. |
@@ -96,7 +99,7 @@ is in the manifest's `data` targets, so Core's `backup`/`restore` cover it. The 
 uses this directory for scratch/state files, including the join recovery journal. The
 directory is created on start and is where the standalone fallback media root lives (`{HOSTY_APP_DATA_DIR}/media`) when no mount is injected. Transcode
 **inputs and outputs** do not live here — they live on the `media` mounts (see
-[Media mounts](../media-mounts.md)).
+[Media mounts](../media-mounts/feature.md)).
 
 ## Endpoints and discovery
 
@@ -131,7 +134,7 @@ Manifest/platform integration (the device passthrough, mount injection, endpoint
 discovery, port binding per runtime, backups) is validated through Core-managed
 runtime. Manifest tests also guard the development source contract, assigned-port and data
 wiring, and the separation from reviewed local and Docker profiles. The settings-resolution layer that reads this environment is
-unit-tested — see [Configuration](../configuration/feature.md) and [Media mounts](../media-mounts.md).
+unit-tested — see [Configuration](../configuration/feature.md) and [Media mounts](../media-mounts/feature.md).
 
 The dev profile requires Core-managed checks for health, source reload, a synthetic transcode,
 and stop/restart. macOS checks do not establish Windows/AMF or Linux/VAAPI acceptance.

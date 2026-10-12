@@ -1,7 +1,10 @@
-# Blu-ray Inspection and MKV Jobs
+---
+created: 2026-09-25
+updated: 2026-09-25
+summary: Blu-ray playlist inspection and playlist-to-MKV jobs bound to the inspected revision.
+---
 
-Created: 2026-09-25
-Updated: 2026-09-25
+# Blu-ray Inspection and MKV Jobs
 
 ## Disc inspection
 

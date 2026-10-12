@@ -1,7 +1,10 @@
-# Hardware Acceleration
+---
+created: 2026-07-03
+updated: 2026-09-17
+summary: Encoder families, the host hardware probe and per-request encoder resolution across VAAPI, VideoToolbox and AMF.
+---
 
-Created: 2026-07-03
-Updated: 2026-09-17
+# Hardware Acceleration
 
 ## Description
 

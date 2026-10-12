@@ -1,7 +1,10 @@
-# Extract Jobs
+---
+created: 2026-08-07
+updated: 2026-08-07
+summary: Jobs that write selected streams of an input out as separate files, one track per file.
+---
 
-Created: 2026-08-07
-Updated: 2026-08-07
+# Extract Jobs
 
 A job can write selected streams of its input out as **separate files** — one track
 per file — so a consumer can pull a dub or a subtitle out of a container without

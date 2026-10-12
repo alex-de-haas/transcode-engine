@@ -1,7 +1,10 @@
-# Configuration
+---
+created: 2026-07-03
+updated: 2026-09-17
+summary: The environment-variable reference for the engine, runtime and port settings.
+---
 
-Created: 2026-07-03
-Updated: 2026-09-17
+# Configuration
 
 ## Description
 
@@ -18,7 +21,7 @@ Set by Core, not by the operator:
 | Variable | Read by | Purpose |
 | --- | --- | --- |
 | `HOSTY_APP_DATA_DIR` | engine | App data / scratch dir; the standalone fallback media root lives under `media/`. Falls back to `{contentRoot}/data` when unset. |
-| `HOSTY_MOUNT_MEDIA` | engine | Comma-joined `label=path` media mounts, parsed into the label→root map. See [Media mounts](../media-mounts.md). |
+| `HOSTY_MOUNT_MEDIA` | engine | Comma-joined `label=path` media mounts, parsed into the label→root map. See [Media mounts](../media-mounts/feature.md). |
 | `HOSTY_PORT_CONTROL` | Program.cs | Loopback control port under the native `local` and `dev` (`localCommand`) runtimes; the app binds exactly this. Ignored in the container. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` (+ other `OTEL_*`) | engine | Presence switches on OTLP export; absence = no telemetry. See [Hosty runtime app](../hosty-runtime-app/feature.md#telemetry). |
 | `DOTNET_RUNNING_IN_CONTAINER` | Program.cs | Set by the docker image; when `true`, Kestrel's default binding (`ASPNETCORE_URLS`) is used instead of `HOSTY_PORT_CONTROL`. |
@@ -68,4 +71,4 @@ directly (e.g. for a local run) when needed:
 
 `TranscodeEngineSettingsTests` (xUnit) cover the resolution rules: the `HWACCEL` value
 parsing (`ParseHardware`, incl. aliases and unknown/empty → null), and the media-mount
-parsing (delegated to the cases in [Media mounts](../media-mounts.md)).
+parsing (delegated to the cases in [Media mounts](../media-mounts/feature.md)).

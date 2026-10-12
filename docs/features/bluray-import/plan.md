@@ -1,8 +1,11 @@
-# Blu-ray Inspection and MKV Jobs
+---
+status: In Progress
+created: 2026-09-24
+updated: 2026-09-25
+summary: Remaining engine work for Blu-ray inspection and MKV conversion approved in the Media Server Blu-ray plan.
+---
 
-Status: In Progress
-Created: 2026-09-24
-Updated: 2026-09-25
+# Blu-ray Inspection and MKV Jobs
 
 ## Goal
 
@@ -23,13 +26,13 @@ restarts preserve terminal status and fail interrupted jobs without touching inp
 
 ## Deliverables
 
-- [x] Inspection and capability contract, path and revision validation.
-- [x] Selected-playlist MKV jobs with track metadata/default/forced controls.
-- [x] Durable admission, progress, cancellation, restart and output validation.
-- [x] Unit and endpoint coverage; build and test checks.
-- [ ] Verify full-duration Dolby Vision RPU/enhancement-layer payloads in representative outputs, including transport-stream inputs without ffprobe configuration records. Header comparison alone is insufficient evidence of payload preservation.
-- [ ] Real-disc 1080p, multi-clip, UHD and Dolby Vision acceptance, including layers.
-- [x] Feature documentation, minor release version and generated index (0.11.0 → 0.12.0).
+- [x] D1. Inspection and capability contract, path and revision validation.
+- [x] D2. Selected-playlist MKV jobs with track metadata/default/forced controls.
+- [x] D3. Durable admission, progress, cancellation, restart and output validation.
+- [x] D4. Unit and endpoint coverage; build and test checks.
+- [ ] D5. Verify full-duration Dolby Vision RPU/enhancement-layer payloads in representative outputs, including transport-stream inputs without ffprobe configuration records. Header comparison alone is insufficient evidence of payload preservation.
+- [ ] D6. Real-disc 1080p, multi-clip, UHD and Dolby Vision acceptance, including layers.
+- [x] D7. Feature documentation, minor release version and generated index (0.11.0 → 0.12.0).
 
 ## Open questions
 
