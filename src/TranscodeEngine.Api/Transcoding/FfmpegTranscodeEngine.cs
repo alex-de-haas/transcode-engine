@@ -44,7 +44,7 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
     private readonly TranscodeEngineSettings _settings;
     private readonly ILogger<FfmpegTranscodeEngine> _logger;
     private readonly ConcurrentDictionary<string, TranscodeJob> _jobs = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Channel<string> _queue = Channel.CreateBounded<string>(
+    private readonly Channel<TranscodeJob> _queue = Channel.CreateBounded<TranscodeJob>(
         new BoundedChannelOptions(MaxQueuedJobs) { FullMode = BoundedChannelFullMode.Wait });
 
     // Whether this host's VAAPI encoder can actually do HEVC Main 10, established once by a throwaway
@@ -76,6 +76,7 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
 
         RestoreJoins();
         RestoreBlurays();
+        RestoreClientJobs();
         _cts = new CancellationTokenSource();
         var workerCount = Math.Max(1, _settings.MaxConcurrentJobs);
         var tasks = Enumerable.Range(0, workerCount)
@@ -113,15 +114,26 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
     }
 
     private readonly SemaphoreSlim _creationGate = new(1, 1);
+    // A terminal state may be visible before the worker finishes scratch cleanup and persistence.
+    // Keep that admission owned until the worker has completely left its output paths.
+    private readonly HashSet<TranscodeJob> _activeWriters = [];
 
     public async Task<JobDescriptor> CreateAsync(TranscodeJobRequest request, CancellationToken cancellationToken)
     {
+        if (request.ClientJobId is { } clientId && (!Guid.TryParseExact(clientId, "N", out var parsedId) || parsedId == Guid.Empty))
+            throw new ArgumentException("clientJobId must be a nonempty UUID in N format.");
+        if (request.ClientJobId is not null)
+            request = request with { ClientJobId = CanonicalJobId(request.ClientJobId) };
         ValidateJoinRequest(request);
         await _creationGate.WaitAsync(cancellationToken);
         try
         {
-            if ((FindExistingBluray(request) ?? FindExistingJoin(request)) is { } previous) return previous;
-            RequireOutputAvailable(request);
+            lock (_joinJournalGate)
+            {
+                RestoreJob(request.ClientJobId);
+                if ((FindExistingClientJob(request) ?? FindExistingBluray(request) ?? FindExistingJoin(request)) is { } previous) return previous;
+                RequireOutputAvailable(request);
+            }
         }
         finally { _creationGate.Release(); }
 
@@ -162,9 +174,9 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
 
     private void RequireOutputAvailable(TranscodeJobRequest request)
     {
-        if ((request.IsJoin || request.Bluray is not null) && File.Exists(request.OutputPath))
+        if ((request.IsJoin || request.Bluray is not null || IsClientJob(request)) && File.Exists(request.OutputPath))
             throw new ArgumentException("The output already exists; choose another filename.");
-        if (_jobs.Values.Any(job => !job.IsTerminal && (job.Request.IsJoin || request.IsJoin || job.Request.Bluray is not null || request.Bluray is not null) &&
+        if (_jobs.Values.Any(job => !job.IsTerminal && (job.Request.IsJoin || request.IsJoin || job.Request.Bluray is not null || request.Bluray is not null || IsClientJob(job.Request) || IsClientJob(request)) &&
             job.OutputPaths.Select(Path.GetFullPath).Intersect(request.OutputPaths.Select(Path.GetFullPath), PathComparer).Any()))
             throw new ArgumentException("Another job is already writing this output.");
     }
@@ -226,39 +238,48 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
             duration = discPlaylist.DurationSeconds;
             inputSize = inspection.SizeBytes;
         }
-        var jobId = (request.IsJoin || request.Bluray is not null) && request.ClientJobId is { } clientId ? clientId : Guid.NewGuid().ToString("n");
+        var jobId = request.ClientJobId ?? Guid.NewGuid().ToString("n");
         var job = new TranscodeJob(jobId, request, duration, source.VideoPixelFormat, source) { JoinParts = joinParts, BlurayPlaylist = discPlaylist };
         await _creationGate.WaitAsync(cancellationToken);
         try
         {
-            if ((FindExistingBluray(request) ?? FindExistingJoin(request)) is { } previous) return previous;
-            RequireOutputAvailable(request);
-            SaveJoin(job);
-            _jobs[jobId] = job;
-            if (!_queue.Writer.TryWrite(jobId))
+            lock (_joinJournalGate)
             {
-                _jobs.TryRemove(jobId, out _);
-                if (request.IsJoin) File.Delete(JoinJournalPath(jobId));
-                if (request.Bluray is not null) File.Delete(BlurayJournalPath(jobId));
-                throw new InvalidOperationException(
-                    "The transcode engine cannot accept the job (the queue is full or the engine is shutting down).");
+                RestoreJob(request.ClientJobId);
+                if ((FindExistingClientJob(request) ?? FindExistingBluray(request) ?? FindExistingJoin(request)) is { } previous) return previous;
+                RequireOutputAvailable(request);
+                SaveJoinCore(job, admitting: true);
+                _jobs[jobId] = job;
+                if (!_queue.Writer.TryWrite(job))
+                {
+                    _jobs.TryRemove(jobId, out _);
+                    if (IsClientJob(request)) File.Delete(ClientJournalPath(jobId));
+                    if (request.IsJoin) File.Delete(JoinJournalPath(jobId));
+                    if (request.Bluray is not null) File.Delete(BlurayJournalPath(jobId));
+                    throw new InvalidOperationException(
+                        "The transcode engine cannot accept the job (the queue is full or the engine is shutting down).");
+                }
+                return new JobDescriptor(jobId, request.InputPath, request.OutputPath, duration, inputSize, job.OutputPaths);
             }
-            return new JobDescriptor(jobId, request.InputPath, request.OutputPath, duration, inputSize, job.OutputPaths);
         }
         finally { _creationGate.Release(); }
     }
 
     public Task CancelAsync(string jobId, CancellationToken cancellationToken)
     {
-        if (_jobs.TryGetValue(jobId, out var job))
+        lock (_joinJournalGate)
         {
-            job.CancelRequested = true;
-            TryKill(job);
-            // A still-queued job (no process yet) is marked here; the worker skips cancelled jobs.
-            if (job.State is JobState.Queued)
+            RestoreJob(jobId);
+            if (_jobs.TryGetValue(jobId, out var job))
             {
-                job.Complete(JobState.Cancelled);
-                SaveJoin(job);
+                job.CancelRequested = true;
+                TryKill(job);
+                // Claimed workers finish cancellation and scratch cleanup before releasing ownership.
+                if (job.State is JobState.Queued && !_activeWriters.Contains(job))
+                {
+                    job.Complete(JobState.Cancelled);
+                    SaveJoinCore(job);
+                }
             }
         }
 
@@ -267,31 +288,34 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
 
     public Task RemoveAsync(string jobId, bool deleteOutput, CancellationToken cancellationToken)
     {
-        if (_jobs.TryGetValue(jobId, out var active) && active.Request.Bluray is not null && active.State is JobState.Queued or JobState.Running)
-            throw new InvalidOperationException("Cancel MKV creation and wait for completion before removing its job.");
-        if (_jobs.TryRemove(jobId, out var job))
+        lock (_joinJournalGate)
         {
-            if (job.Request.IsJoin) TryDeleteOutput(JoinJournalPath(jobId));
-            if (job.Request.Bluray is not null) TryDeleteOutput(BlurayJournalPath(jobId));
-            job.CancelRequested = true;
-            TryKill(job);
-
-            if (deleteOutput)
+            RestoreJob(jobId);
+            if (_jobs.TryGetValue(jobId, out var active) &&
+                (active.Request.Bluray is not null || active.Request.ClientJobId is not null) &&
+                (_activeWriters.Contains(active) || !active.IsTerminal))
+                throw new InvalidOperationException("Cancel the job and wait for completion before removing it.");
+            // Do not forget a client-owned job if its durable record could not be removed.
+            if (active is not null && IsClientJob(active.Request)) File.Delete(ClientJournalPath(active.JobId));
+            if (_jobs.TryRemove(jobId, out var job))
             {
-                // Every file, not just the first: an extraction's outputs are one job's result, and leaving
-                // the rest behind would strand files the caller has just asked to be rid of.
-                foreach (var path in job.OutputPaths)
-                {
-                    TryDeleteOutput(path);
-                }
+                if (job.Request.IsJoin) TryDeleteOutput(JoinJournalPath(job.JobId));
+                if (job.Request.Bluray is not null) TryDeleteOutput(BlurayJournalPath(job.JobId));
+                job.CancelRequested = true;
+                TryKill(job);
+                // A failed no-overwrite publication may have found somebody else's destination.
+                if (deleteOutput && (!IsClientJob(job.Request) || job.State == JobState.Completed))
+                    foreach (var path in job.OutputPaths) TryDeleteOutput(path);
             }
         }
-
         return Task.CompletedTask;
     }
 
-    public JobSnapshot? GetSnapshot(string jobId) =>
-        _jobs.TryGetValue(jobId, out var job) ? job.ToSnapshot() : null;
+    public JobSnapshot? GetSnapshot(string jobId)
+    {
+        RestoreJob(jobId);
+        return _jobs.TryGetValue(jobId, out var job) ? job.ToSnapshot() : null;
+    }
 
     public IReadOnlyList<JobSnapshot> GetAllSnapshots() =>
         _jobs.Values.Select(job => job.ToSnapshot()).ToList();
@@ -300,14 +324,26 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
     {
         try
         {
-            await foreach (var jobId in _queue.Reader.ReadAllAsync(cancellationToken))
+            await foreach (var job in _queue.Reader.ReadAllAsync(cancellationToken))
             {
-                if (!_jobs.TryGetValue(jobId, out var job) || job.CancelRequested)
+                lock (_joinJournalGate)
                 {
-                    continue;
+                    if (!_jobs.TryGetValue(job.JobId, out var current) || !ReferenceEquals(current, job) ||
+                        job.CancelRequested || job.State != JobState.Queued || !_activeWriters.Add(job)) continue;
                 }
-
-                await RunJobAsync(job, cancellationToken);
+                try { await RunJobAsync(job, cancellationToken); }
+                finally
+                {
+                    lock (_joinJournalGate)
+                    {
+                        // All runners, including staged Dolby Vision, persist before releasing ownership.
+                        try { SaveJoinCore(job); }
+                        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                        { _logger.LogError(exception, "Could not persist terminal job {JobId}.", job.JobId); }
+                        _activeWriters.Remove(job);
+                        PruneTerminalJobs();
+                    }
+                }
             }
         }
         catch (OperationCanceledException)
@@ -502,7 +538,7 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
             else if (process.ExitCode == 0 && TryPublishOutputs(job, tempPaths, outputPaths, stderrTail))
             {
                 job.Complete(JobState.Completed);
-                SaveJoin(job);
+                // Shared finalization persists this result without letting journal I/O reverse publication.
                 JobCompleted?.Invoke(this, job.JobId);
                 _logger.LogInformation("Job {JobId} completed.", job.JobId);
             }
@@ -548,11 +584,7 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
             {
                 TryDeleteOutput(job.JoinListPath);
                 TryDeleteOutput(job.JoinMetadataPath);
-                try { if (_jobs.ContainsKey(job.JobId)) SaveJoin(job); }
-                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-                { _logger.LogError(exception, "Could not persist terminal join {JobId}.", job.JobId); }
             }
-            PruneTerminalJobs();
         }
     }
 
@@ -587,7 +619,7 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
         {
             try
             {
-                File.Move(tempPaths[index], outputPaths[index], overwrite: !job.Request.IsJoin);
+                File.Move(tempPaths[index], outputPaths[index], overwrite: !job.Request.IsJoin && !IsClientJob(job.Request));
                 published.Add(outputPaths[index]);
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
@@ -625,13 +657,14 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
     /// Called after each job finishes.</summary>
     private void PruneTerminalJobs()
     {
-        var terminal = _jobs.Values
-            .Where(job => job.IsTerminal)
-            .Select(job => (job.JobId, job.CompletedAt))
-            .ToList();
-        foreach (var jobId in SelectTerminalJobsToEvict(terminal, DateTimeOffset.UtcNow, TerminalJobRetention, MaxRetainedTerminalJobs))
+        lock (_joinJournalGate)
         {
-            _jobs.TryRemove(jobId, out _);
+            var terminal = _jobs.Values
+                .Where(job => job.IsTerminal && !_activeWriters.Contains(job))
+                .Select(job => (job.JobId, job.CompletedAt))
+                .ToList();
+            foreach (var jobId in SelectTerminalJobsToEvict(terminal, DateTimeOffset.UtcNow, TerminalJobRetention, MaxRetainedTerminalJobs))
+                _jobs.TryRemove(jobId, out _);
         }
     }
 

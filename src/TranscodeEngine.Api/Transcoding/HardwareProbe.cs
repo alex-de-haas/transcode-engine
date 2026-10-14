@@ -22,7 +22,8 @@ public sealed record HardwareStatus(
     DateTimeOffset CheckedAt,
     ToolingStatus? Tools = null,
     bool VideoPartJoining = true,
-    bool ExplicitVideoSelection = true);
+    bool ExplicitVideoSelection = true,
+    bool IdempotentTranscodes = true);
 
 /// <summary>Inspects the passed-through DRI devices to report VAAPI availability without spawning a process.</summary>
 public static class HardwareProbe

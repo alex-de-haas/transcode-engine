@@ -491,7 +491,6 @@ public sealed partial class FfmpegTranscodeEngine
                 TryDeleteOutput(finalTemp);
             }
 
-            PruneTerminalJobs();
         }
     }
 

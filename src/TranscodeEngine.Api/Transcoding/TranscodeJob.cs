@@ -60,6 +60,7 @@ internal sealed class TranscodeJob
     /// the video's frame rate, language and title from it when it rebuilds the track from an elementary
     /// stream; every other job reads only <see cref="SourcePixelFormat"/>.</summary>
     public FfmpegTranscodeEngine.SourceProbe Source { get; }
+    internal double? DurationSeconds => _durationSeconds;
 
     public string JobId { get; }
 

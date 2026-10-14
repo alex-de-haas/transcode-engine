@@ -191,6 +191,7 @@ Plans: 1 In Progress.
 - [Media Mounts and Path Resolution](features/media-mounts/feature.md) — Labelled media mounts route each job's input and output onto the filesystem the consumer shares, with safe path resolution.
 - [Merge Jobs](features/merge-jobs/feature.md) — Jobs that fold sidecar dubs and subtitles into a video and can rewrite stream languages and titles.
 - [Probe API](features/probe-api/feature.md) — POST /probe returns a normalized description of a media file's container and streams.
+- [Retryable encode submissions](features/retryable-submissions/feature.md) — Ordinary encode and remux jobs accept stable client IDs and retain acceptance across provider restarts.
 - [Transcode Engine](features/transcode-engine/feature.md) — The ffmpeg engine wrapper, its worker pool, in-memory job state and event mapping.
 - [Video Part Joining](features/video-part-joining/feature.md) — Join two ordered video parts into one Matroska output through POST /jobs/join.
 - [Explicit Video Selection](features/video-selection/feature.md) — Exact video track selection and metadata preservation for remux, conversion and Dolby Vision jobs.

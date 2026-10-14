@@ -46,6 +46,8 @@ public static class TranscodeEndpoints
             // of here rather than threading a flag through every check.
             if (request.Outputs is { Count: > 0 } extractionOutputs)
             {
+                if (request.ClientJobId is not null)
+                    return Results.BadRequest(new { error = "clientJobId is supported for composed jobs only." });
                 return await CreateExtractionAsync(request, extractionOutputs, engine, settings, ct);
             }
 
@@ -280,7 +282,8 @@ public static class TranscodeEndpoints
                 request.MetadataOverrides?.Select(o => new StreamMetadataOverride(o.Input, o.StreamIndex, o.Language, o.Title)).ToList(),
                 audioTargets,
                 DolbyVision: dolbyVision,
-                VideoStreamIndex: request.VideoStreamIndex);
+                VideoStreamIndex: request.VideoStreamIndex,
+                ClientJobId: request.ClientJobId?.ToString("N"));
 
             // The engine refuses what only the probed input can tell — a Dolby Vision conversion of a source
             // that is not profile 7 — as an ArgumentException, which is the same 400 as every rule above.

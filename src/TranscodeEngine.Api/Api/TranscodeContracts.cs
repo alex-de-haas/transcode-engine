@@ -48,7 +48,8 @@ public sealed record CreateJobRequest(
     IReadOnlyList<AudioTargetRequest>? AudioTargets = null,
     IReadOnlyList<OutputRequest>? Outputs = null,
     string? DolbyVision = null,
-    int? VideoStreamIndex = null);
+    int? VideoStreamIndex = null,
+    Guid? ClientJobId = null);
 
 /// <summary>
 /// One stream of the input written out as its own file — how an extraction is expressed. The path resolves
