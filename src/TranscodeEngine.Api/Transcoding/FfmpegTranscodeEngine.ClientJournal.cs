@@ -6,9 +6,24 @@ public sealed partial class FfmpegTranscodeEngine
 {
     private sealed record ClientJournal(TranscodeJobRequest Request, double? Duration, JobState State, string? Error);
     private string ClientJournalDirectory => Path.Combine(_settings.AppDataDir, "client-jobs");
-    private string ClientJournalPath(string id) => Path.Combine(ClientJournalDirectory, id + ".json");
+    private string ClientJournalPath(string id) => Path.Combine(ClientJournalDirectory, CanonicalJobId(id) + ".json");
     private static bool IsClientJob(TranscodeJobRequest request) =>
         request.ClientJobId is not null && !request.IsJoin && request.Bluray is null && !request.IsExtraction;
+
+    private static string CanonicalJobId(string id) => Guid.TryParseExact(id, "N", out var value) ? value.ToString("N") : id;
+
+    // All durable operations share one ID namespace, even after their memory entry has expired.
+    private void RestoreJob(string? id)
+    {
+        if (id is null || !Guid.TryParseExact(id, "N", out _)) return;
+        lock (_joinJournalGate)
+        {
+            id = CanonicalJobId(id);
+            RestoreJoins(id);
+            RestoreBlurays(id);
+            RestoreClientJobs(id);
+        }
+    }
 
     private JobDescriptor? FindExistingClientJob(TranscodeJobRequest request)
     {
@@ -48,18 +63,24 @@ public sealed partial class FfmpegTranscodeEngine
                 // A corrupt acceptance record must not turn into permission to submit another writer.
                 var record = JsonSerializer.Deserialize<ClientJournal>(File.ReadAllText(path))
                     ?? throw new InvalidDataException("Invalid transcode acceptance record.");
-                if (!Guid.TryParseExact(id, "N", out _) || record.Request.ClientJobId != id || !IsClientJob(record.Request))
+                if (!Guid.TryParseExact(id, "N", out _) || !string.Equals(record.Request.ClientJobId, id, StringComparison.OrdinalIgnoreCase) || !IsClientJob(record.Request))
                     throw new InvalidDataException("Invalid transcode acceptance identity.");
                 var job = new TranscodeJob(id, record.Request, record.Duration);
                 if (record.State is JobState.Queued or JobState.Running)
                 {
                     job.Fail("The engine restarted before this transcode finished. Start a new job to retry.");
                     foreach (var output in job.OutputPaths) TryDeleteOutput(TempOutputPath(output, id));
+                    if (job.Request.ConvertsDolbyVision)
+                    {
+                        var temps = DolbyVisionIntermediatePaths(job.Request.OutputPath!, id);
+                        foreach (var temp in new[] { temps.Tracks, temps.SourceLayers, temps.ConvertedLayer }) TryDeleteOutput(temp);
+                    }
                 }
                 else if (record.State == JobState.Failed) job.Fail(record.Error);
                 else job.Complete(record.State);
                 _jobs[id] = job;
-                SaveClientJob(job);
+                if (record.State is JobState.Queued or JobState.Running) SaveClientJob(job);
+                if (onlyId is null && _jobs.Count > MaxRetainedTerminalJobs) PruneTerminalJobs();
             }
         }
     }

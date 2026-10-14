@@ -6,7 +6,7 @@ public sealed partial class FfmpegTranscodeEngine
 {
     private sealed record JoinJournal(TranscodeJobRequest Request, JoinMediaInfo[] Parts, JobState State, string? Error);
     private string JoinJournalDirectory => Path.Combine(_settings.AppDataDir, "join-jobs");
-    private string JoinJournalPath(string id) => Path.Combine(JoinJournalDirectory, id + ".json");
+    private string JoinJournalPath(string id) => Path.Combine(JoinJournalDirectory, CanonicalJobId(id) + ".json");
 
     // Join records survive a process restart so an interrupted writer never becomes an unknown job that
     // its caller might accidentally submit again. Small metadata writes only; media stays on its mount.
@@ -17,8 +17,9 @@ public sealed partial class FfmpegTranscodeEngine
         lock (_joinJournalGate) SaveJoinCore(job);
     }
 
-    private void SaveJoinCore(TranscodeJob job)
+    private void SaveJoinCore(TranscodeJob job, bool admitting = false)
     {
+        if (!admitting && (!_jobs.TryGetValue(job.JobId, out var current) || !ReferenceEquals(current, job))) return;
         SaveBluray(job);
         SaveClientJob(job);
         if (!job.Request.IsJoin || job.JoinParts is null) return;

@@ -9,7 +9,7 @@ namespace TranscodeEngine.Api.Transcoding;
 public sealed partial class FfmpegTranscodeEngine
 {
     private sealed record BlurayJournal(TranscodeJobRequest Request, BlurayPlaylist Playlist, JobState State, string? Error);
-    private string BlurayJournalPath(string id) => Path.Combine(_settings.AppDataDir, "bluray-jobs", id + ".json");
+    private string BlurayJournalPath(string id) => Path.Combine(_settings.AppDataDir, "bluray-jobs", CanonicalJobId(id) + ".json");
     private void SaveBluray(TranscodeJob job)
     {
         if (job.Request.Bluray is null || job.BlurayPlaylist is null) return;
@@ -177,7 +177,7 @@ public sealed partial class FfmpegTranscodeEngine
 
     private void SaveBluraySafely(TranscodeJob job)
     {
-        try { SaveBluray(job); }
+        try { SaveJoin(job); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         { _logger.LogWarning(ex, "Could not persist terminal Blu-ray job {Id}; keeping the worker available.", job.JobId); }
     }
