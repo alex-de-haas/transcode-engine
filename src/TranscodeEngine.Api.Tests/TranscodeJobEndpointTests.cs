@@ -20,6 +20,22 @@ namespace TranscodeEngine.Api.Tests;
 /// </summary>
 public sealed class TranscodeJobEndpointTests
 {
+    [Fact]
+    public async Task Post_ClientId_is_forwarded_for_an_ordinary_transcode()
+    {
+        var media = MediaWith("in.mkv");
+        var engine = ITranscodeEngine.Imposter();
+        TranscodeJobRequest? captured = null;
+        engine.CreateAsync(Arg<TranscodeJobRequest>.Any(), Arg<CancellationToken>.Any())
+            .Returns((TranscodeJobRequest request, CancellationToken _) => { captured = request; return Task.FromResult(Descriptor); });
+        var (client, app) = await HostAsync(Settings($"media={media}"), engine.Instance());
+        await using var _ = app;
+        var id = Guid.NewGuid();
+        var response = await client.PostAsJsonAsync("/jobs", new { inputPath = "in.mkv", outputPath = "out.mkv", clientJobId = id });
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(id.ToString("N"), captured!.ClientJobId);
+    }
+
     [Theory]
     [InlineData(-1, false, HttpStatusCode.BadRequest)]
     [InlineData(3, false, HttpStatusCode.OK)]
