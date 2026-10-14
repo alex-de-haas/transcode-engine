@@ -22,6 +22,9 @@ The engine persists accepted requests and terminal states under `client-jobs` in
 After restart, completed/cancelled/failed jobs retain their outcomes; interrupted jobs
 become failed and their temporary outputs, including Dolby Vision intermediates, are removed. A retry does not enqueue another
 writer. Input files remain unchanged. Corrupt acceptance records fail closed.
+Terminal journal I/O errors are logged without reversing an already-published in-process
+success. If that terminal write never succeeds, restart treats the retained acceptance
+record as interrupted rather than claiming a durable success.
 
 Startup bounds the restored terminal cache and leaves already-terminal journals unchanged.
 In-memory terminal retention does not delete these durable records. Direct lookup and

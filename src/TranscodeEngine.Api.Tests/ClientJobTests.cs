@@ -316,4 +316,35 @@ public sealed class ClientJobTests : IDisposable
         finally { await engine.StopAsync(default); }
     }
 
+    [JoinFfmpegFact]
+    public async Task Terminal_journal_io_failure_does_not_reverse_published_output()
+    {
+        var ffmpeg = Environment.GetEnvironmentVariable("FFMPEG_PATH")!;
+        var input = Path.Combine(_root, "original.avi");
+        await Run(ffmpeg, "-v", "error", "-f", "lavfi", "-i", "testsrc=size=96x64:rate=12", "-t", "1", "-c:v", "mpeg4", input);
+        var data = Path.Combine(_root, "data");
+        using var engine = new FfmpegTranscodeEngine(new() { AppDataDir = data,
+            MediaRoots = new Dictionary<string, string>(), FfmpegPath = ffmpeg,
+            FfprobePath = Environment.GetEnvironmentVariable("FFPROBE_PATH")! }, NullLogger<FfmpegTranscodeEngine>.Instance);
+        var request = Request() with { InputPath = input };
+        await engine.CreateAsync(request, default);
+        // Inject a terminal-journal write failure after durable admission has already succeeded.
+        var blockedTemp = Path.Combine(data, "client-jobs", request.ClientJobId + ".json.tmp");
+        Directory.CreateDirectory(blockedTemp);
+        await engine.StartAsync(default);
+        try
+        {
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            while (engine.GetSnapshot(request.ClientJobId!)!.State is "Queued" or "Running") await Task.Delay(20, deadline.Token);
+        }
+        finally { await engine.StopAsync(default); }
+        Assert.Equal("Completed", engine.GetSnapshot(request.ClientJobId!)!.State);
+        Assert.Equal(request.ClientJobId, (await engine.CreateAsync(request, default)).JobId);
+        await Run(ffmpeg, "-v", "error", "-i", request.OutputPath!, "-f", "null", "-");
+        Directory.Delete(blockedTemp);
+        await engine.RemoveAsync(request.ClientJobId!, true, default);
+        Assert.False(File.Exists(request.OutputPath));
+        Assert.Null(engine.GetSnapshot(request.ClientJobId!));
+    }
+
 }

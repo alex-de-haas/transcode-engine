@@ -538,7 +538,7 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
             else if (process.ExitCode == 0 && TryPublishOutputs(job, tempPaths, outputPaths, stderrTail))
             {
                 job.Complete(JobState.Completed);
-                SaveJoin(job);
+                // Shared finalization persists this result without letting journal I/O reverse publication.
                 JobCompleted?.Invoke(this, job.JobId);
                 _logger.LogInformation("Job {JobId} completed.", job.JobId);
             }
