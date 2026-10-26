@@ -8,13 +8,15 @@
 // The format is specified in AGENTS.md ("Documentation"). The canonical copy of this script lives in
 // alex-de-haas/docker-host; other repositories carry a byte-identical copy, so change it there first.
 //
-// Workflow docs live in docs/features/<name>/{feature.md,plan.md}, plus docs/vision.md and the
+// Workflow docs live in docs/features/<name>/{feature.md,plan.md}, plus docs/vision.md, docs/ideas.md and the
 // docs/reviews/ archive. Any other Markdown under docs/ is rejected, except the top-level files other
 // tooling owns (TOOLING_FILES).
 
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
+import { documentLinks, headings, ideaReservations, ideaEvolution, indexEntry, indexBlock } from "./docs-format.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const docsDir = join(repoRoot, "docs");
@@ -34,6 +36,7 @@ const SCHEMAS = {
   plan: { required: ["status", "created", "updated", "summary"], optional: ["components"] },
   feature: { required: ["created", "updated", "summary"], optional: ["components"] },
   vision: { required: ["created", "updated"], optional: [] },
+  ideas: { required: ["created", "updated"], optional: [] },
 };
 
 const mode = process.argv.includes("--fix") ? "fix" : process.argv.includes("--check") ? "check" : "print";
@@ -248,28 +251,42 @@ function checkDeliverables(file, prose) {
   return { total: ids.size, done };
 }
 
-// Relative links must resolve. External URLs and pure anchors are not checked; neither is code.
-function checkLinks(file, prose) {
-  for (const { index, line } of prose) {
-    const text = line.replace(/(`+)[^`]*?\1/g, "");
-    const targets = [...text.matchAll(/\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g)].map((m) => m[1]);
-    const definition = text.match(/^\s*\[[^\]]+\]:\s+<?([^\s>]+)>?/);
-    if (definition) targets.push(definition[1]);
-    for (const target of targets) {
-      if (/^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith("#")) continue;
-      let path = target.replace(/[#?].*$/, "");
-      try {
-        path = decodeURIComponent(path);
-      } catch {
-        // Keep the raw path; the existence check below reports it.
-      }
-      if (path.startsWith("/")) {
-        errors.push(`${rel(file)}:${index + 1}: link "${target}" is absolute; use a relative path`);
-        continue;
-      }
-      if (!existsSync(join(dirname(file), path))) errors.push(`${rel(file)}:${index + 1}: broken link "${target}"`);
-    }
+// Links and anchors use the same semantics as Documents. Fenced and inline code stay examples.
+function checkLinks(file) {
+  for (const link of documentLinks(rel(file), readFileSync(file, "utf8"))) {
+    const at = `${rel(file)}:${link.line}`;
+    if (!link.path) { errors.push(`${at}: link "${link.href}" is absolute or outside the repository; use a relative path`); continue; }
+    const target = join(repoRoot, link.path);
+    if (!existsSync(target)) { errors.push(`${at}: broken link "${link.href}"`); continue; }
+    if (link.anchor && target.endsWith(".md") && statSync(target).isFile()
+        && !headings(readFileSync(target, "utf8")).some(item => item.id === link.anchor))
+      errors.push(`${at}: missing anchor "#${link.anchor}" in ${link.path}`);
   }
+}
+
+function previousIdeas(ref) {
+  try { return execFileSync("git", ["show", `${ref}:docs/ideas.md`], { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 4 * 1024 * 1024 }); }
+  catch { return null; }
+}
+function checkIdeaIds(file, content) {
+  errors.push(...ideaReservations(content).errors.map(error => `${rel(file)}: ${error}`));
+  const option = process.argv.indexOf("--base");
+  const environmentBase = process.env.DOCS_BASE_REF;
+  const explicit = option >= 0 || !!environmentBase && !/^0+$/.test(environmentBase);
+  const base = option >= 0 ? process.argv[option + 1] : explicit ? environmentBase : "HEAD";
+  if (!base || base.startsWith("-")) { errors.push("--base requires a Git revision"); return; }
+  if (explicit) {
+    try { execFileSync("git", ["rev-parse", "--verify", `${base}^{commit}`], { cwd: repoRoot, stdio: "ignore" }); }
+    catch { errors.push(`Cannot resolve idea allocation baseline ${base}`); return; }
+  }
+  const previous = previousIdeas(base);
+  if (previous === null) return;
+  let ancestor = previous;
+  if (explicit) {
+    try { const sha = execFileSync("git", ["merge-base", "HEAD", base], { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); ancestor = previousIdeas(sha) ?? ""; }
+    catch { errors.push(`Cannot resolve idea allocation baseline ${base}`); return; }
+  }
+  errors.push(...ideaEvolution(content, previous, ancestor).map(error => `${rel(file)}: ${error}`));
 }
 
 function readDoc(file, kind) {
@@ -296,11 +313,18 @@ function readDoc(file, kind) {
   const h1 = prose.find(({ line }) => line.trim() !== "");
   const title = h1?.line.match(/^# (.+?)\s*#*\s*$/)?.[1];
   if (!title) errors.push(`${rel(file)}: the first line after the frontmatter must be the "# Title" heading`);
-  checkLinks(file, prose);
+  checkLinks(file);
   if (kind === "feature") {
     const sections = prose.filter(({ line }) => /^## /.test(line));
     if (sections.at(-1)?.line.trim() !== "## Testing Expectations")
       errors.push(`${rel(file)}: feature.md must end with a "## Testing Expectations" section`);
+  }
+  if (kind === "ideas") {
+    checkIdeaIds(file, text);
+    for (const { index, line } of prose) {
+      if (/^## Deliverables\s*$/.test(line) || /^\s*[-*+] \[[ xX]\]/.test(line))
+        errors.push(`${rel(file)}:${index + 1}: ideas.md must not carry deliverables or task checkboxes; scoped work belongs in a plan`);
+    }
   }
   const progress = kind === "plan" ? checkDeliverables(file, prose) : null;
   return { data, title: title ?? "Untitled", progress };
@@ -329,17 +353,9 @@ if (existsSync(featuresDir)) {
       }
       const feature = existsSync(featureMd) ? readDoc(featureMd, "feature") : null;
       const plan = existsSync(planMd) ? readDoc(planMd, "plan") : null;
-      const main = feature ?? plan;
-      const link = `features/${name}/${feature ? "feature" : "plan"}.md`;
-      let entry = `- [${main.title}](${link}) — ${main.data.summary ?? "?"}`;
-      if (plan) {
-        const status = plan.data.status ?? "?";
-        statusCounts.set(status, (statusCounts.get(status) ?? 0) + 1);
-        const facts = [status];
-        if (plan.progress.total) facts.push(`${plan.progress.done}/${plan.progress.total}`);
-        if (plan.data.updated) facts.push(`updated ${plan.data.updated}`);
-        entry += feature ? ` · [plan](features/${name}/plan.md): ${facts.join(", ")}` : ` · ${facts.join(", ")}`;
-      }
+      const flatten = document => document ? { title: document.title, ...document.data, progress: document.progress } : null;
+      if (plan) { const status = plan.data.status ?? "?"; statusCounts.set(status, (statusCounts.get(status) ?? 0) + 1); }
+      const entry = indexEntry(name, flatten(feature), flatten(plan));
       entries.push(entry);
     } else if (name.endsWith(".md")) {
       errors.push(`${rel(dir)}: flat feature document; move it to docs/features/<name>/feature.md or plan.md`);
@@ -370,7 +386,7 @@ if (existsSync(docsDir)) {
       if (WORKFLOW_DIRS.has(name)) continue;
       for (const file of markdownUnder(path))
         errors.push(`${rel(file)}: not a workflow location; documents live in docs/features/<name>/ (feature.md, plan.md)`);
-    } else if (name.endsWith(".md") && !["root.md", "vision.md"].includes(name) && !TOOLING_FILES.has(name)) {
+    } else if (name.endsWith(".md") && !["root.md", "vision.md", "ideas.md"].includes(name) && !TOOLING_FILES.has(name)) {
       errors.push(`${rel(path)}: not a workflow location; documents live in docs/features/<name>/ (feature.md, plan.md)`);
     }
   }
@@ -378,22 +394,11 @@ if (existsSync(docsDir)) {
 
 const visionMd = join(docsDir, "vision.md");
 if (existsSync(visionMd)) readDoc(visionMd, "vision");
+const ideasMd = join(docsDir, "ideas.md");
+if (existsSync(ideasMd)) readDoc(ideasMd, "ideas");
+else checkIdeaIds(ideasMd, "");
 
-const counts = PLAN_STATUSES.filter((s) => statusCounts.has(s)).map((s) => `${statusCounts.get(s)} ${s}`);
-if (statusCounts.has("?")) counts.push(`${statusCounts.get("?")} without a status`);
-
-const lines = [
-  BEGIN,
-  "",
-  "_Generated by `scripts/docs-index.mjs --fix` — do not edit this block by hand._",
-  "",
-  "### Features",
-  "",
-  ...(counts.length ? [`Plans: ${counts.join(" · ")}.`, ""] : []),
-  ...(entries.length ? entries : ["_None yet._"]),
-];
-lines.push("", END);
-const block = lines.join("\n");
+const block = indexBlock(entries, Object.fromEntries(statusCounts));
 
 if (mode === "print") {
   console.log(block);
@@ -425,7 +430,7 @@ if (mode === "print") {
 if (existsSync(rootMd)) {
   const text = readFileSync(rootMd, "utf8");
   checkPrintable(rootMd, text);
-  checkLinks(rootMd, proseLines(text.split("\n"), 0));
+  checkLinks(rootMd);
 }
 
 if (errors.length) {

@@ -181,6 +181,16 @@ generated block by hand; run `--fix` after changing any document.
 lives in docker-host and the others carry a byte-identical copy, so change it
 there first.
 
+Keep `scripts/docs-format.mjs` byte-identical alongside the canonical validator. Idea headings
+use stable `I<n>` identifiers. `docs/ideas.md` reserves the last allocated number with
+`<!-- idea-id-high-water: N -->` and removed IDs with `<!-- retired-idea-ids: I3, I8 -->`.
+Allocate above the high-water value, never lower it, and never reuse a retired ID. Run
+`node scripts/docs-index.mjs --check --base <target-ref>` before publication to detect
+concurrent allocations. File and heading links are validated in their current source version.
+Update status and checked deliverables in the working copy as soon as required verification passes;
+this does not authorize a commit. Registered workspaces expose those current Markdown changes.
+
+
 ## Unit Testing
 - Use `xUnit` for backend unit tests.
 - Use `Imposter` for mocking dependencies in tests.
