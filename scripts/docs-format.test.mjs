@@ -141,3 +141,18 @@ test("merged target-only ideas are not independent proposal allocations", () => 
   assert.deepEqual(ideaEvolution(target, target, ancestor, ancestor), []);
   assert.match(ideaEvolution(target, target, ancestor, target).join(" "), /Concurrent allocation of I2/);
 });
+
+test("heading anchors retain code and identifier underscores while stripping actual emphasis", () => {
+  const outline = headings([
+    "## `DOCS_BASE_REF`", "## foo_bar", "## `work_item.assign`",
+    "## _Important_ __details__", "## `__literal__`", "## escaped\\_identifier",
+    "## ``with`an_underscore``", "## `a<b>_c`", "## _some_identifier_",
+  ].join("\n"));
+  assert.deepEqual(outline.map(item => item.id), [
+    "docs_base_ref", "foo_bar", "work_itemassign", "important-details",
+    "__literal__", "escaped_identifier", "withan_underscore", "ab_c", "some_identifier",
+  ]);
+  assert.equal(outline[0].text, "DOCS_BASE_REF");
+  assert.equal(outline[4].text, "__literal__");
+  assert.equal(outline[7].text, "a<b>_c");
+});

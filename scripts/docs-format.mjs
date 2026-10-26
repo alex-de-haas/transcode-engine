@@ -26,13 +26,27 @@ export function proseLines(content) {
   return result;
 }
 export function plainText(text) {
-  return text
+  const literals = [];
+  const keep = (value) => `\u0000${literals.push(value) - 1}\u0000`;
+  // Code span contents are literal: underscores, escaped punctuation and HTML-like text
+  // inside them must not be consumed as formatting by the surrounding heading.
+  let prose = text
+    .replace(/(?<![\\`])(`+)(?!`)([\s\S]*?)(?<!`)\1(?!`)/g, (_match, _ticks, value) =>
+      keep(/^ .+ $/.test(value) && /\S/.test(value) ? value.slice(1, -1) : value))
+    .replace(/\\([_*~`])/g, (_match, value) => keep(value))
     .replace(/!?(?:\[([^\]]*)\])\([^)]*\)/g, "$1")
-    .replace(/<[^>]*>/g, "")
-    .replace(/[`*_~]/g, "")
+    .replace(/<[^>]*>/g, "");
+  // Underscores within identifiers are not emphasis delimiters. Strip only paired,
+  // word-boundary delimiters; repeat for nested emphasis without touching code spans.
+  for (let depth = 0; depth < 3; depth++) {
+    prose = prose.replace(/(?<![\p{L}\p{N}_])(_{1,3})(?=\S)(.+?)(?<!\s)\1(?![\p{L}\p{N}_])/gu, "$2");
+  }
+  return prose
+    .replace(/[`*~]/g, "")
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">");
+    .replace(/&gt;/g, ">")
+    .replace(/\u0000(\d+)\u0000/g, (match, index) => literals[Number(index)] ?? match);
 }
 export function headingSlug(text) {
   return plainText(text)
