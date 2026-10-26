@@ -165,7 +165,7 @@ export function ideaReservations(content) {
     );
   return { items, highWater, retired, errors };
 }
-export function ideaEvolution(content, previous, ancestor = previous) {
+export function ideaEvolution(content, previous, ancestor = previous, proposal = content) {
   const now = ideaReservations(content),
     before = ideaReservations(previous),
     base = ideaReservations(ancestor);
@@ -180,6 +180,7 @@ export function ideaEvolution(content, previous, ancestor = previous) {
   const active = new Set(now.items.map((item) => item.ideaId));
   const old = new Set(before.items.map((item) => item.ideaId));
   const initial = new Set(base.items.map((item) => item.ideaId));
+  const proposed = new Set(ideaReservations(proposal).items.map((item) => item.ideaId));
   for (const id of new Set([...before.retired, ...old])) {
     if (!active.has(id) && !now.retired.includes(id))
       errors.push(`Removed idea ${id} must stay reserved in retired-idea-ids.`);
@@ -198,7 +199,7 @@ export function ideaEvolution(content, previous, ancestor = previous) {
     const competing = before.items.find(
       (other) => other.ideaId === item.ideaId,
     );
-    if (!initial.has(item.ideaId) && competing)
+    if (!initial.has(item.ideaId) && proposed.has(item.ideaId) && competing)
       errors.push(
         `Concurrent allocation of ${item.ideaId}; assign the unpublished idea a new ID before merging.`,
       );

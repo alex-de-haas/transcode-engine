@@ -133,3 +133,11 @@ test("empty registries retain valid reservation metadata", () => {
 test('independent allocations conflict even when their headings happen to match', () => {
   assert.match(ideaEvolution(ideas(3, '## I3. Same title\nLocal idea'), ideas(3, '## I3. Same title\nOther idea'), ideas(2, '')).join(' '), /Concurrent allocation/);
 });
+
+
+test("merged target-only ideas are not independent proposal allocations", () => {
+  const ancestor = ideas(1, "## I1. Existing");
+  const target = ideas(2, "## I1. Existing\n## I2. Target allocation");
+  assert.deepEqual(ideaEvolution(target, target, ancestor, ancestor), []);
+  assert.match(ideaEvolution(target, target, ancestor, target).join(" "), /Concurrent allocation of I2/);
+});

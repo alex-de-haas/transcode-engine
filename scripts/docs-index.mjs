@@ -4,6 +4,8 @@
 //   node scripts/docs-index.mjs          print the index block and validation results
 //   node scripts/docs-index.mjs --fix    upgrade legacy header lines to frontmatter, rewrite the index block
 //   node scripts/docs-index.mjs --check  exit 1 if the block is stale or any document is invalid
+//   --base <ref> / DOCS_BASE_REF compares idea reservations with the target.
+//   --head <ref> / DOCS_HEAD_REF identifies the original PR head when validating a merge checkout.
 //
 // The format is specified in AGENTS.md ("Documentation"). The canonical copy of this script lives in
 // alex-de-haas/docker-host; other repositories carry a byte-identical copy, so change it there first.
@@ -279,14 +281,28 @@ function checkIdeaIds(file, content) {
     try { execFileSync("git", ["rev-parse", "--verify", `${base}^{commit}`], { cwd: repoRoot, stdio: "ignore" }); }
     catch { errors.push(`Cannot resolve idea allocation baseline ${base}`); return; }
   }
+  const headOption = process.argv.indexOf("--head");
+  const head = headOption >= 0 ? process.argv[headOption + 1] : process.env.DOCS_HEAD_REF || "HEAD";
+  if (!head || head.startsWith("-")) { errors.push("--head requires a Git revision"); return; }
+  if (explicit) {
+    try { execFileSync("git", ["rev-parse", "--verify", `${head}^{commit}`], { cwd: repoRoot, stdio: "ignore" }); }
+    catch { errors.push(`Cannot resolve idea proposal head ${head}`); return; }
+  }
   const previous = previousIdeas(base);
   if (previous === null) return;
   let ancestor = previous;
+  let proposal = content;
   if (explicit) {
-    try { const sha = execFileSync("git", ["merge-base", "HEAD", base], { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); ancestor = previousIdeas(sha) ?? ""; }
+    try {
+      const sha = execFileSync("git", ["merge-base", head, base], { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+      ancestor = previousIdeas(sha) ?? "";
+      // Validate the merged working copy, but only the proposal can introduce a competing ID.
+      // IDs inherited solely from the target are not independent allocations.
+      if (head !== "HEAD") proposal = previousIdeas(head) ?? "";
+    }
     catch { errors.push(`Cannot resolve idea allocation baseline ${base}`); return; }
   }
-  errors.push(...ideaEvolution(content, previous, ancestor).map(error => `${rel(file)}: ${error}`));
+  errors.push(...ideaEvolution(content, previous, ancestor, proposal).map(error => `${rel(file)}: ${error}`));
 }
 
 function readDoc(file, kind) {

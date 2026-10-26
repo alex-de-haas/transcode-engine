@@ -49,4 +49,7 @@ jobs:
       - name: Check docs index and headers
         env:
           DOCS_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: node scripts/docs-index.mjs --check
+          DOCS_HEAD_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          node --test scripts/docs-format.test.mjs scripts/docs-git.test.mjs
+          node scripts/docs-index.mjs --check
