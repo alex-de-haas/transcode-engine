@@ -39,7 +39,7 @@ jobs:
         with:
           fetch-depth: 1
 
-      - uses: anthropics/claude-code-action@16f9f71ab9c490faf367f94dd294897edc25be33 # v1.0.261
+      - uses: anthropics/claude-code-action@6d5ae526d25ce88daa2200be073e1a373167f064 # v1.0.265
         env:
           # The plugin fans the review out to subagents, which Claude Code starts in the background;
           # the print-mode session can then finish before they report. This keeps them in the
