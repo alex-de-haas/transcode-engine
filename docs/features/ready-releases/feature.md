@@ -43,6 +43,10 @@ hosty --data-root <instance-root> apps update com.haas.transcode-engine --plan-d
 
 Source selection and applying an app update are separate reviewed steps. Preserve the operation UUID after uncertainty and query `apps update-source operation`. Keep the existing autostart setting and stopped/running state. Verify the next update plan is a no-op and the selected image locks match the release. No registry-file edit, source override or provider credential transfer is involved.
 
+## Rollout verification
+
+The 2026-11-04 rollout publishes version 0.15.0 through the public daily index after successful PR/main CI and native amd64/arm64 image verification. A Core-managed child accepts the published release, updates its running installation and reports healthy services. The existing operator installation is migrated from main to daily and updated from 0.14.0 to 0.15.0; its stopped state, autostart, settings, mounts and grants are preserved. The next update plan contains no changes. Development installations remain unchanged.
+
 ## Publisher maintenance
 
 `scripts/releases/` vendors Hosty's publisher and tests from docker-host commit `407dffa8f9dad4f9758624ed3e5860b9304549bc`, with its AGPL-3.0 license retained in that directory. The five standalone apps carry the same implementation. Standalone adaptations support root-level assets, nested Docker contexts, optional platform builds, an explicit consumer-validator path, native per-platform receipts and the aggregate CI gate. The validator checkout is pinned to the same full commit. These CI utilities are separate from the app's runtime and license.
