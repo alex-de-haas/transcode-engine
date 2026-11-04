@@ -13,3 +13,8 @@ data/
 
 # Claude Code (personal, machine-local settings)
 .claude/settings.local.json
+
+# Ready-release build outputs and pinned consumer validator
+/release-plan/
+/release-artifacts/
+/.hosty-validator/

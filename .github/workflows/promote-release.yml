@@ -1,0 +1,61 @@
+name: Promote ready release
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Exact app ID or platform
+        required: true
+        type: string
+      feed:
+        description: Publisher-configured destination feed ID
+        required: true
+        type: string
+      release-id:
+        description: Exact retained release ID (64 lowercase hex characters)
+        required: true
+        type: string
+      expected-release:
+        description: Reviewed current destination release ID, or first
+        required: true
+        type: string
+      evidence:
+        description: Stabilization note or evidence URL
+        required: true
+        type: string
+      request-id:
+        description: UUID retained across retries of this promotion
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  promote:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+      packages: read
+      attestations: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Revalidate and promote the selected immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TARGET: ${{ inputs.target }}
+          RELEASE_FEED: ${{ inputs.feed }}
+          RELEASE_ID: ${{ inputs.release-id }}
+          EXPECTED_RELEASE: ${{ inputs.expected-release }}
+          STABILIZATION_EVIDENCE: ${{ inputs.evidence }}
+          PROMOTION_ID: ${{ inputs.request-id }}
+        run: node scripts/releases/promote.mjs

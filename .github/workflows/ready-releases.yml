@@ -1,0 +1,240 @@
+name: Ready releases
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      force-rebuild:
+        description: Explicitly rebuild all candidates instead of reusing verified artifacts
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ready-releases
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+      packages: read
+    outputs:
+      source: ${{ steps.validation.outputs.source-sha }}
+      run-id: ${{ steps.validation.outputs.run-id }}
+      images: ${{ steps.plan.outputs.images }}
+      native-images: ${{ steps.plan.outputs.native-images }}
+      has-images: ${{ steps.plan.outputs.has-images }}
+      platform: ${{ steps.plan.outputs.platform }}
+      platform-publish: ${{ steps.plan.outputs.platform-publish }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Require successful CI for the exact main source
+        id: validation
+        env:
+          CI_GATE_TOKEN: ${{ github.token }}
+        run: node scripts/releases/ci-gate.mjs
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.validation.outputs.source-sha }}
+          fetch-depth: 0
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Select artifact builds independently of check selection
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISH_SOURCE_SHA: ${{ steps.validation.outputs.source-sha }}
+          VALIDATED_CI_RUN_ID: ${{ steps.validation.outputs.run-id }}
+          FORCE_REBUILD: ${{ inputs.force-rebuild || false }}
+        run: node scripts/releases/prepare.mjs
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: release-plan
+          path: |
+            release-plan/release-plan.json
+            release-plan/*.inputs.json
+            release-plan/contexts.tar
+          include-hidden-files: true
+
+  image-build:
+    needs: prepare
+    if: needs.prepare.outputs.has-images == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.native-images) }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.source }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: release-plan
+          path: release-plan
+      - name: Restore the exact context including executable modes and symlinks
+        run: tar -xf release-plan/contexts.tar -C release-plan
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+        with:
+          driver-opts: image=${{ matrix.builder }}
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Build only the selected exact context
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
+        with:
+          context: release-plan/contexts/${{ matrix.id }}
+          file: release-plan/contexts/${{ matrix.id }}/${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          build-args: ${{ matrix.buildArgs }}
+          provenance: false
+          outputs: type=image,name=${{ matrix.repository }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.id }}-${{ matrix.slug }}
+          cache-to: type=gha,scope=${{ matrix.id }}-${{ matrix.slug }},mode=max
+      - name: Record the platform result
+        env:
+          IMAGE_ID: ${{ matrix.id }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_PLATFORM: ${{ matrix.platform }}
+        run: node scripts/releases/merge-images.mjs record
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: platform-${{ matrix.id }}-${{ matrix.slug }}
+          path: release-artifacts/*.platform.json
+
+  images:
+    needs: [prepare, image-build]
+    if: needs.prepare.outputs.has-images == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.images) }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.source }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: release-plan
+          path: release-plan
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          pattern: platform-${{ matrix.id }}-*
+          merge-multiple: true
+          path: release-artifacts
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Merge the complete verified platform set
+        id: merge
+        env:
+          IMAGE_ID: ${{ matrix.id }}
+        run: node scripts/releases/merge-images.mjs merge
+      - uses: actions/attest@v4
+        with:
+          predicate-type: https://hosty.dev/attestations/release-artifact/v1
+          predicate-path: release-artifacts/predicate.json
+          subject-name: ${{ matrix.repository }}
+          subject-digest: ${{ steps.merge.outputs.digest }}
+          push-to-registry: true
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: image-${{ matrix.id }}
+          path: release-artifacts/${{ matrix.id }}.json
+
+  publish-apps:
+    needs: [prepare, images]
+    if: always() && needs.prepare.result == 'success' && needs.images.result != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+      packages: write
+      attestations: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.source }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: release-plan
+          path: release-plan
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - uses: actions/download-artifact@v8.0.2
+        continue-on-error: true
+        if: needs.prepare.outputs.has-images == 'true'
+        with:
+          pattern: image-*
+          merge-multiple: true
+          path: release-artifacts
+      - uses: actions/checkout@v7
+        with:
+          repository: alex-de-haas/docker-host
+          ref: 407dffa8f9dad4f9758624ed3e5860b9304549bc
+          path: .hosty-validator
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - name: Build the consumer manifest validator
+        run: dotnet build .hosty-validator/apps/core/tests/Haas.Hosty.ReleaseValidation/Haas.Hosty.ReleaseValidation.csproj --configuration Release
+      - name: Verify complete apps, retain releases, then advance configured automatic feeds
+        env:
+          HOSTY_RELEASE_VALIDATOR: ${{ github.workspace }}/.hosty-validator/apps/core/tests/Haas.Hosty.ReleaseValidation/bin/Release/net10.0/Haas.Hosty.ReleaseValidation.dll
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/releases/publish.mjs

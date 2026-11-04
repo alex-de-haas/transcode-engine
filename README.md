@@ -216,3 +216,5 @@ the Hosty Core platform repo (not this one).
 - **WSL2 device exposure:** VAAPI in docker on Windows 11 + WSL2 requires the host to expose `/dev/dri`
   (with an assigned render node) inside the WSL2 distro first. Verify `ls -la /dev/dri` and `vainfo` in the
   WSL2 shell before relying on the in-container `GET /hardware`.
+
+Ready-release publication and migration are documented in [Ready app releases](docs/features/ready-releases/feature.md).
