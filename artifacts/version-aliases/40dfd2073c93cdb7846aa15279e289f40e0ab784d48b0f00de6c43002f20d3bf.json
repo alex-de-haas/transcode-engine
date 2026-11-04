@@ -1,0 +1,1 @@
+{"appId":"com.haas.transcode-engine","digest":"sha256:2e8dac54fb02fdc986b069bc15dc63bd620f1850dfbcaee4810ae36e5380eaa0","platforms":["linux/amd64","linux/arm64"],"repository":"ghcr.io/alex-de-haas/transcode-engine","version":"0.15.0"}
