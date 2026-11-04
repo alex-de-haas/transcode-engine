@@ -1,0 +1,1 @@
+{"appId":"com.haas.transcode-engine","feeds":[{"default":true,"id":"daily","manifestRef":"https://raw.githubusercontent.com/alex-de-haas/transcode-engine/78feb90b32ed7cf06d4e010050d19236a7129292/apps/com.haas.transcode-engine/releases/d1d9b3bce37123e7606b620e62c767d3d8e583a66a2bd819bb5e64c166c16803/manifest.json"}],"schemaVersion":"app-feeds.0.1"}
