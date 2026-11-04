@@ -1,6 +1,6 @@
 ---
 created: 2026-07-03
-updated: 2026-09-17
+updated: 2026-11-04
 summary: The Hosty manifest, runtime profiles, devices, settings, app data and telemetry.
 ---
 
@@ -23,7 +23,7 @@ A single `engine` service with **four** runtime profiles (`defaultRuntime: docke
 | Manifest section | Value / purpose |
 | --- | --- |
 | `runtimeProfiles` | `docker` (default), `docker-vaapi`, `local`, `dev` (see below). |
-| `services[].engine.runtimes.docker` | `ghcr.io/alex-de-haas/transcode-engine:latest`, `control` → container port `8080` (http). **No device** — always starts. |
+| `services[].engine.runtimes.docker` | `ghcr.io/alex-de-haas/transcode-engine:0.15.0`, `control` → container port `8080` (http). **No device** — always starts. |
 | `…runtimes.docker-vaapi` | Same image + port, plus `devices: ["/dev/dri"]` for hardware VAAPI. |
 | `…runtimes.local` | `localCommand`: `dotnet run --project src/TranscodeEngine.Api --configuration Release` in the repo root, `control` port `8080`. Runs natively on the host for VideoToolbox / AMF. |
 | `…runtimes.dev` | Editable native source, `development: true`, restore followed by noninteractive `dotnet watch`; Core assigns the control port. |

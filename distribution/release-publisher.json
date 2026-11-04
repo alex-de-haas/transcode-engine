@@ -1,0 +1,66 @@
+{
+  "schemaVersion": "hosty-publisher.0.1",
+  "metadataBranch": "app-releases",
+  "sourceBranch": "main",
+  "feeds": [
+    {
+      "id": "daily",
+      "label": "Daily",
+      "policy": "validated-source",
+      "default": true
+    },
+    {
+      "id": "stable",
+      "label": "Stable",
+      "policy": "manual-promotion"
+    }
+  ],
+  "apps": [
+    {
+      "id": "com.haas.transcode-engine",
+      "manifest": "manifest.json",
+      "profiles": [
+        "docker",
+        "docker-vaapi",
+        "local"
+      ],
+      "sourceInputs": [
+        "manifest.json",
+        "assets",
+        "public",
+        "docs/store.md",
+        "skills",
+        "src",
+        "docker",
+        "global.json",
+        "Directory.Build.props",
+        "Directory.Build.targets",
+        "NuGet.config"
+      ],
+      "sourceReusable": false
+    }
+  ],
+  "images": [
+    {
+      "id": "transcode-engine",
+      "appId": "com.haas.transcode-engine",
+      "services": [
+        "engine"
+      ],
+      "repository": "ghcr.io/alex-de-haas/transcode-engine",
+      "context": ".",
+      "dockerfile": "Dockerfile",
+      "inputs": [],
+      "platforms": [
+        "linux/amd64",
+        "linux/arm64"
+      ],
+      "reusable": false,
+      "reuseConstraint": "Conservative rebuild until all package and operating-system inputs are immutable.",
+      "toolchain": {
+        "buildkit": "docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc",
+        "contextFormat": "hosty-build-inputs.0.1"
+      }
+    }
+  ]
+}

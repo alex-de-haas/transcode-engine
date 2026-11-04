@@ -1,6 +1,6 @@
 ---
 created: 2026-07-03
-updated: 2026-09-17
+updated: 2026-11-04
 summary: The container image, its entrypoint, CI and multi-arch publishing, and running under the docker and local runtimes.
 ---
 
@@ -83,15 +83,9 @@ because it cannot be limited to GET and would write with the App token. The step
 sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`, so the subagents run in the foreground
 and the session cannot end before they report.
 
-## Publishing (`.github/workflows/publish.yml`)
+## Publishing
 
-On pushes to `main` (→ `:latest`), version tags `v*` (→ `:vX.Y.Z`), and manual
-dispatch, the image is built **multi-arch the fast way**: `linux/amd64` and
-`linux/arm64` each build on their **own native runner** in parallel (no QEMU — the
-emulated arm64 build is slow and flaky), push blobs by digest, and a final `merge` job
-assembles the tagged manifest list from those digests. Images land at
-`ghcr.io/alex-de-haas/transcode-engine`. Tags come from `docker/metadata-action`
-(`latest` on the default branch, the git tag, and a short-SHA tag).
+The [ready-release publisher](../ready-releases/feature.md) waits for successful exact-source main CI, builds selected images on native amd64 and arm64 runners, validates every artifact and advances daily only after the complete release is readable. Stable uses manual promotion of a retained release. Source manifests are development inputs; production updates follow the published ready index.
 
 ## Running under each runtime
 
