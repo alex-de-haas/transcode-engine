@@ -8,6 +8,10 @@ public sealed partial class FfmpegTranscodeEngine
 {
     private static readonly TimeSpan EncoderQualityProbeTimeout = TimeSpan.FromSeconds(8);
     private readonly ConcurrentDictionary<(TranscodeVideoCodec, TranscodeHardware), Lazy<Task<bool>>> _encoderQualityProbes = new();
+    // A discovery encode must not compete with a job for a hardware session. Jobs hold the gate
+    // only while registering, so they can still run concurrently at the configured worker limit.
+    private readonly SemaphoreSlim _hardwareDiscoveryGate = new(1, 1);
+    private int _activeHardwareJobs;
 
     internal async Task<IReadOnlyList<EncoderQualityOption>> GetEncoderQualityOptionsAsync(HardwareStatus status, CancellationToken cancellationToken)
     {
@@ -25,7 +29,7 @@ public sealed partial class FfmpegTranscodeEngine
         TranscodeVideoCodec codec, TranscodeHardware hardware, EncoderQualityOption option)
     {
         var probe = _encoderQualityProbes.GetOrAdd((codec, hardware), _ => new Lazy<Task<bool>>(
-            () => ProbeEncoderQualityAsync(codec, hardware, option.DefaultValue),
+            () => ProbeEncoderQualityWhenIdleAsync(codec, hardware, option.DefaultValue),
             LazyThreadSafetyMode.ExecutionAndPublication));
         // A busy device or a transient driver fault can clear. Keep successful probes for the engine
         // process lifetime, and let a later availability request retry an unsuccessful probe.
@@ -35,7 +39,24 @@ public sealed partial class FfmpegTranscodeEngine
         return null;
     }
 
-    private async Task<bool> ProbeEncoderQualityAsync(TranscodeVideoCodec codec, TranscodeHardware hardware, int value)
+    private async Task<bool> ProbeEncoderQualityWhenIdleAsync(TranscodeVideoCodec codec, TranscodeHardware hardware, int value)
+    {
+        using var timeout = new CancellationTokenSource(EncoderQualityProbeTimeout);
+        if (hardware == TranscodeHardware.None)
+            return await ProbeEncoderQualityAsync(codec, hardware, value, timeout.Token);
+
+        try { await _hardwareDiscoveryGate.WaitAsync(timeout.Token); }
+        catch (OperationCanceledException) { return false; }
+        try
+        {
+            return Volatile.Read(ref _activeHardwareJobs) == 0 &&
+                await ProbeEncoderQualityAsync(codec, hardware, value, timeout.Token);
+        }
+        finally { _hardwareDiscoveryGate.Release(); }
+    }
+
+    private async Task<bool> ProbeEncoderQualityAsync(
+        TranscodeVideoCodec codec, TranscodeHardware hardware, int value, CancellationToken timeout)
     {
         // Check a small generated encode through the same rate-control flags as a real job. Encoder
         // presence alone would, for example, offer VideoToolbox quality mode on an Intel Mac.
@@ -59,12 +80,11 @@ public sealed partial class FfmpegTranscodeEngine
             process.StartInfo.ArgumentList.Add(arg);
         try
         {
-            if (!process.Start())
+            if (timeout.IsCancellationRequested || !process.Start())
                 return false;
-            using var timeout = new CancellationTokenSource(EncoderQualityProbeTimeout);
-            var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
-            var stdout = process.StandardOutput.ReadToEndAsync(timeout.Token);
-            await Task.WhenAll(process.WaitForExitAsync(timeout.Token), stdout, stderr);
+            var stderr = process.StandardError.ReadToEndAsync(timeout);
+            var stdout = process.StandardOutput.ReadToEndAsync(timeout);
+            await Task.WhenAll(process.WaitForExitAsync(timeout), stdout, stderr);
             if (process.ExitCode == 0)
                 return true;
             _logger.LogDebug("Native quality probe for {Encoder} failed: {Error}", EncoderName(codec, hardware), await stderr);

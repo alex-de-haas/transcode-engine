@@ -1,6 +1,6 @@
 ---
 created: 2026-07-03
-updated: 2026-11-19
+updated: 2026-11-20
 summary: Encoder families, the host hardware probe and per-request encoder resolution across VAAPI, VideoToolbox and AMF.
 ---
 
@@ -54,6 +54,9 @@ Inside the Linux docker container `videoToolboxAvailable` and `amfAvailable` are
 always false. `vaapiAvailable` reflects whether the `/dev/dri` passthrough worked.
 `encoderQualityOptions` lists codec and encoder pairs that pass a brief FFmpeg
 encode with the native quality mode. Successful probes are cached for the process.
+New hardware probes run one at a time while hardware encoding is idle. When a
+hardware encode is active, the endpoint returns previously verified options and
+can retry the other probes on a later request.
 
 ## Resolution and fallback (`ResolveHardware`)
 

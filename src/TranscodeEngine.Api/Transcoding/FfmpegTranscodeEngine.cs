@@ -389,11 +389,37 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
             return;
         }
 
+        if (hardware == TranscodeHardware.None || request.CopyVideo || request.IsExtraction || request.IsJoin)
+        {
+            await RunJobWithEncoderAsync(job, hardware, cancellationToken);
+            return;
+        }
+
+        try { await _hardwareDiscoveryGate.WaitAsync(cancellationToken); }
+        catch (OperationCanceledException)
+        {
+            job.Complete(JobState.Cancelled);
+            return;
+        }
+        Interlocked.Increment(ref _activeHardwareJobs);
+        _hardwareDiscoveryGate.Release();
+        try
+        {
+            if (job.CancelRequested)
+                job.Complete(JobState.Cancelled);
+            else
+                await RunJobWithEncoderAsync(job, hardware, cancellationToken);
+        }
+        finally { Interlocked.Decrement(ref _activeHardwareJobs); }
+    }
+
+    private async Task RunJobWithEncoderAsync(TranscodeJob job, TranscodeHardware hardware, CancellationToken cancellationToken)
+    {
         // A VAAPI render node may expose a Main-only HEVC encoder. Check Main 10 before encoding a
         // 10-bit source. Preset jobs can switch to software to keep the input depth.
         if (NeedsVaapiTenBit(job.Request, hardware, job.SourcePixelFormat) && !_vaapiTenBitSupported.Value)
         {
-            if (explicitQuality)
+            if (job.Request.EncoderQuality is not null)
             {
                 FailEncoderSelection(job, "The selected VAAPI encoder does not support HEVC Main 10 for this source.");
                 return;

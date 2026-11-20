@@ -143,6 +143,75 @@ public sealed class ClientJobTests : IDisposable
         Assert.False(File.Exists(request.OutputPath));
     }
 
+    [Fact]
+    public async Task Native_quality_discovery_skips_busy_hardware_without_serializing_jobs()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var ffmpeg = Path.Combine(_root, "ffmpeg");
+        var device = Path.Combine(_root, "render-device");
+        var release = Path.Combine(_root, "release");
+        var probeStarted = Path.Combine(_root, "native-probe-started");
+        File.WriteAllText(device, "");
+        await File.WriteAllTextAsync(ffmpeg, """
+            #!/bin/sh
+            root=$(dirname "$0")
+            for arg do
+                case "$arg" in
+                    -progress) job=yes ;;
+                    -vaapi_device) vaapi=yes ;;
+                esac
+                output=$arg
+            done
+            if [ "$job" = yes ]; then
+                touch "$output.started"
+                while [ ! -f "$root/release" ]; do sleep 0.02; done
+                printf 'output' > "$output"
+            elif [ "$vaapi" = yes ]; then
+                touch "$root/native-probe-started"
+            fi
+            """);
+        File.SetUnixFileMode(ffmpeg, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var settings = new TranscodeEngineSettings
+        {
+            AppDataDir = Path.Combine(_root, "data"), MediaRoots = new Dictionary<string, string>(),
+            MaxConcurrentJobs = 2, FfmpegPath = ffmpeg, FfprobePath = Path.Combine(_root, "no-probe"), VaapiDevice = device,
+        };
+        using var engine = new FfmpegTranscodeEngine(settings, NullLogger<FfmpegTranscodeEngine>.Instance);
+        await engine.StartAsync(default);
+        try
+        {
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            foreach (var output in new[] { "first.mkv", "second.mkv" })
+            {
+                await engine.CreateAsync(Request() with
+                {
+                    OutputPath = Path.Combine(_root, output), CopyVideo = false, HardwareAcceleration = TranscodeHardware.Vaapi,
+                    QualityLevel = null, EncoderQuality = 20,
+                }, deadline.Token);
+            }
+
+            while (Directory.GetFiles(_root, "*.started").Length < 2)
+                await Task.Delay(20, deadline.Token);
+
+            var hardware = HardwareProbe.Detect(settings);
+            var busyOptions = await engine.GetEncoderQualityOptionsAsync(hardware, deadline.Token);
+            Assert.Contains(busyOptions, option => option.HardwareAcceleration == "none");
+            Assert.DoesNotContain(busyOptions, option => option.HardwareAcceleration == "vaapi");
+            Assert.False(File.Exists(probeStarted));
+
+            File.WriteAllText(release, "");
+            while ((await engine.GetEncoderQualityOptionsAsync(hardware, deadline.Token))
+                   .Count(option => option.HardwareAcceleration == "vaapi") < 2)
+                await Task.Delay(20, deadline.Token);
+            Assert.True(File.Exists(probeStarted));
+        }
+        finally
+        {
+            File.WriteAllText(release, "");
+            await engine.StopAsync(default);
+        }
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
