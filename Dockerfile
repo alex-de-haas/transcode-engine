@@ -2,7 +2,7 @@
 # Build context: repo root.
 
 # ---- build ----
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:11.0 AS build
 ARG TARGETARCH
 WORKDIR /src
 
@@ -34,7 +34,7 @@ RUN set -eu; \
     /out/dovi_tool --version
 
 # ---- runtime ----
-FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:11.0 AS runtime
 WORKDIR /app
 
 # ffmpeg + the VA-API userspace stack. Hardware encoding runs against a /dev/dri render node passed

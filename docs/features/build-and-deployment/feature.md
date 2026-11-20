@@ -1,6 +1,6 @@
 ---
 created: 2026-07-03
-updated: 2026-11-04
+updated: 2026-11-20
 summary: The container image, its entrypoint, CI and multi-arch publishing, and running under the docker and local runtimes.
 ---
 
@@ -9,7 +9,7 @@ summary: The container image, its entrypoint, CI and multi-arch publishing, and 
 ## Description
 
 The engine ships as a single-service container image built from a framework-dependent
-.NET 10 app, published multi-arch to GHCR, and installed by Hosty Core from the
+.NET 11 app, published multi-arch to GHCR, and installed by Hosty Core from the
 manifest — or run natively via the `local` runtime for host-native encoders. This doc
 covers the Dockerfile, the container entrypoint, CI, image publishing, and running
 under each runtime.
@@ -18,12 +18,12 @@ under each runtime.
 
 A two-stage build from the repo root:
 
-- **Build stage** (`mcr.microsoft.com/dotnet/sdk:10.0`). Restores and
+- **Build stage** (`mcr.microsoft.com/dotnet/sdk:11.0`). Restores and
   `dotnet publish -c Release` the API into a framework-dependent app. (Unlike the
   sibling torrent-engine, this app is **not** Native AOT — it ships on the managed
   `aspnet` runtime, which shelling out to ffmpeg does not conflict with.)
-- **Runtime stage** (`mcr.microsoft.com/dotnet/aspnet:10.0`). Installs `ffmpeg` and the
-  VA-API userspace stack — `vainfo`, `libva2`, `libva-drm2`, `mesa-va-drivers`,
+- **Runtime stage** (`mcr.microsoft.com/dotnet/aspnet:11.0`, Ubuntu 26.04). Installs
+  `ffmpeg` and the VA-API userspace stack — `vainfo`, `libva2`, `libva-drm2`, `mesa-va-drivers`,
   `libdrm2`. `mesa-va-drivers` covers both Intel (iHD/i965) and AMD (radeonsi); the
   host kernel driver behind a passed-through `/dev/dri` device does the actual work.
   With no device present the engine still runs and falls back to software encoding.
@@ -44,6 +44,9 @@ A two-stage build from the repo root:
 Hardware VAAPI needs a `/dev/dri` render node at runtime, granted through the
 `docker-vaapi` [manifest profile](../hosty-runtime-app/feature.md#runtime-profiles).
 
+.NET 11 requires x86-64-v2 on x64 hosts for both container and native execution.
+Native execution on Windows Arm64 requires LSE.
+
 ## The entrypoint (`docker/entrypoint.sh`)
 
 The entrypoint is a diagnostic wrapper, not a gate. It logs whether the `/dev/dri`
@@ -57,7 +60,7 @@ PID 1 and receives signals for a clean shutdown.
 
 On pushes to `main` and on pull requests: restore, `dotnet build --configuration
 Release`, and `dotnet test` the `TranscodeEngine.Api.Tests` project on `ubuntu-latest`
-with the .NET 10 SDK. Superseded runs on the same ref are cancelled.
+with the .NET 11 SDK. Superseded runs on the same ref are cancelled.
 
 ## Pull request review (`.github/workflows/claude-code-review.yml`)
 
@@ -94,7 +97,7 @@ the Shell. Which runtime you pick determines the available encoder (see
 [Hardware acceleration](../hardware-acceleration/feature.md)):
 
 ```bash
-# Default: software encoding, starts everywhere (incl. macOS Docker Desktop, no /dev/dri).
+# Default: software encoding without a render device, including macOS Docker Desktop.
 hosty apps install . --runtime docker
 
 # Hardware VAAPI: only on a Linux host that exposes a render node (verify `ls -la /dev/dri` first).
@@ -105,7 +108,7 @@ hosty apps install . --runtime docker-vaapi
 runtime, which runs `dotnet run` on the host so `ffmpeg` is the host's own:
 
 ```bash
-# macOS: host needs ffmpeg (with VideoToolbox) + the .NET SDK.
+# macOS: host needs ffmpeg (with VideoToolbox) and the .NET 11 SDK.
 brew install ffmpeg dotnet
 hosty apps install . --runtime local
 hosty apps start com.haas.transcode-engine
@@ -113,7 +116,7 @@ hosty apps start com.haas.transcode-engine
 
 On Windows the `local` runtime reaches the AMD **AMF** stack (hardware decode via
 D3D11VA + the `*_amf` encoders) when the host has the AMD Adrenalin driver (which ships
-`amfrt64.dll`), an ffmpeg build with AMF + d3d11va on `PATH`, and the .NET SDK.
+`amfrt64.dll`), an ffmpeg build with AMF + d3d11va on `PATH`, and the .NET 11 SDK.
 `HWACCEL=auto` then picks the platform encoder automatically; force one with
 `HWACCEL=videotoolbox` / `HWACCEL=amf` / `HWACCEL=vaapi`.
 
