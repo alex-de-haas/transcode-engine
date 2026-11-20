@@ -20,6 +20,60 @@ namespace TranscodeEngine.Api.Tests;
 /// </summary>
 public sealed class TranscodeJobEndpointTests
 {
+    [Theory]
+    [InlineData("hevc", "none", 0, TranscodeHardware.None)]
+    [InlineData("h264", "none", 13.5, TranscodeHardware.None)]
+    [InlineData("hevc", "none", 51, TranscodeHardware.None)]
+    [InlineData("hevc", "vaapi", 1, TranscodeHardware.Vaapi)]
+    [InlineData("h264", "amf", 0, TranscodeHardware.Amf)]
+    [InlineData("hevc", "videotoolbox", 100, TranscodeHardware.VideoToolbox)]
+    public async Task Post_AcceptsNativeEncoderQuality(string videoCodec, string hardwareAcceleration, double encoderQuality, TranscodeHardware hardware)
+    {
+        var media = MediaWith("in.mkv");
+        var engine = ITranscodeEngine.Imposter();
+        TranscodeJobRequest? captured = null;
+        engine.CreateAsync(Arg<TranscodeJobRequest>.Any(), Arg<CancellationToken>.Any())
+            .Returns((TranscodeJobRequest request, CancellationToken _) => { captured = request; return Task.FromResult(Descriptor); });
+        var (client, app) = await HostAsync(Settings($"media={media}"), engine.Instance());
+        await using var _ = app;
+        var response = await client.PostAsJsonAsync("/jobs", new
+        {
+            inputPath = "in.mkv", outputPath = "out.mkv", videoCodec, hardwareAcceleration, encoderQuality,
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(encoderQuality, captured!.EncoderQuality);
+        Assert.Null(captured.QualityLevel);
+        Assert.Equal(hardware, captured.HardwareAcceleration);
+    }
+
+    [Theory]
+    [InlineData(-0.1, "hevc", "none", null, "between 0 and 51")]
+    [InlineData(51.1, "hevc", "none", null, "between 0 and 51")]
+    [InlineData(14.255, "hevc", "none", null, "two decimal places")]
+    [InlineData(10, "hevc", "none", "high", "mutually exclusive")]
+    [InlineData(10, "hevc", "auto", null, "explicitly selected encoder")]
+    [InlineData(0, "hevc", "vaapi", null, "between 1 and 51")]
+    [InlineData(10.5, "h264", "amf", null, "whole number")]
+    [InlineData(101, "hevc", "videotoolbox", null, "between 1 and 100")]
+    [InlineData(0, "copy", "none", null, "requires a video encode")]
+    [InlineData(10, null, "none", null, "explicit videoCodec")]
+    public async Task Post_EncoderQuality_RejectsInvalidValuesAndModes(
+        double encoderQuality, string? videoCodec, string hardwareAcceleration, string? qualityLevel, string expectedError)
+    {
+        var media = MediaWith("in.mkv");
+        var engine = ITranscodeEngine.Imposter();
+        var (client, app) = await HostAsync(Settings($"media={media}"), engine.Instance());
+        await using var _ = app;
+        var response = await client.PostAsJsonAsync("/jobs", new
+        {
+            inputPath = "in.mkv", outputPath = "out.mkv", videoCodec, hardwareAcceleration, qualityLevel, encoderQuality,
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains(expectedError, (await response.Content.ReadFromJsonAsync<ErrorBody>())!.Error);
+    }
+
     [Fact]
     public async Task Post_ClientId_is_forwarded_for_an_ordinary_transcode()
     {

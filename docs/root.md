@@ -180,7 +180,7 @@ Plans: 1 In Progress.
 
 - [Blu-ray Inspection and MKV Jobs](features/bluray-import/feature.md) — Blu-ray playlist inspection and playlist-to-MKV jobs bound to the inspected revision. · [plan](features/bluray-import/plan.md): In Progress, 5/7, updated 2026-09-25
 - [Build and Deployment](features/build-and-deployment/feature.md) — The container image, its entrypoint, CI and multi-arch publishing, and running under the docker and local runtimes.
-- [Compression Controls](features/compression-controls/feature.md) — A quality level every encoder family honours and per-track audio re-encoding, so a job can make files smaller.
+- [Compression Controls](features/compression-controls/feature.md) — Native encoder quality, legacy quality presets and per-track audio re-encoding.
 - [Configuration](features/configuration/feature.md) — The environment-variable reference for the engine, runtime and port settings.
 - [Consumer Integration](features/consumer-integration/feature.md) — How a consumer app declares the engine as a dependency, discovers it, shares media mounts and tolerates its absence.
 - [Control API](features/control-api/feature.md) — The HTTP control API and SSE event stream through which consumers create and follow transcode jobs.

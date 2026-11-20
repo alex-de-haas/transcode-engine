@@ -1,6 +1,6 @@
 ---
 created: 2026-07-03
-updated: 2026-10-12
+updated: 2026-11-19
 summary: The HTTP control API and SSE event stream through which consumers create and follow transcode jobs.
 ---
 
@@ -56,8 +56,9 @@ Body (`CreateJobRequest`). `inputPath` is required, and so is exactly one of
 | `outputMountLabel` | string? | Media mount for the output — for an extraction, the default mount for every entry in `outputs` that names none. Defaults to `inputMountLabel` when omitted. |
 | `videoStreamIndex` | int? | Absolute primary-input video index for composed jobs. Omission keeps the first video; explicit selection is probed and validated. See [Video selection](../video-selection/feature.md). |
 | `videoCodec` | string? | `h264`, `hevc` (default), or `copy` (remux the video untouched). Aliases: `h265`/`x265` → hevc, `avc`/`x264` → h264. **Defaults to `copy` on a merge** — see `additionalInputs`. |
-| `hardwareAcceleration` | string? | `auto` (default), `vaapi`, `videotoolbox`, `amf`, or `none`. A choice the host can't satisfy falls back to software — including a 10-bit HEVC job on a VAAPI device whose encoder is Main-only. See [Hardware acceleration](../hardware-acceleration/feature.md). |
-| `qualityLevel` | string? | `highest`, `high` (default), `balanced`, or `small`. Encoder-independent: the engine maps it onto whichever family the host reaches, so the same level means the same picture everywhere. See [Compression controls](../compression-controls/feature.md). |
+| `hardwareAcceleration` | string? | `auto` (default), `vaapi`, `videotoolbox`, `amf`, or `none`. Preset jobs can fall back to software. A job with `encoderQuality` requires its selected encoder. See [Hardware acceleration](../hardware-acceleration/feature.md). |
+| `qualityLevel` | string? | `highest`, `high` (default), `balanced`, or `small`. The engine maps each legacy preset onto its chosen encoder. See [Compression controls](../compression-controls/feature.md). |
+| `encoderQuality` | number? | Native quality value for an explicitly selected video codec and encoder. Use the bounds and step from `GET /hardware`. Mutually exclusive with `qualityLevel` and unavailable for `auto` or a video copy. |
 | `maxHeight` | int? | Downscale to this height (aspect kept, never upscales), `16`–`4320`. Omit to keep the source resolution. |
 | `audioStreamIndexes` | int[]? | Absolute input stream indices to keep, in output order. Omit to copy **all** audio. |
 | `subtitleStreamIndexes` | int[]? | Absolute input subtitle indices to keep. Omit to copy all. **Matroska (`.mkv`) output only.** |
@@ -70,7 +71,7 @@ Body (`CreateJobRequest`). `inputPath` is required, and so is exactly one of
 
 The handler validates before it mutates: it parses the codec/hardware/quality level,
 range-checks `maxHeight`, rejects negative stream indices, rejects encode-only knobs
-(`maxHeight` / `qualityLevel`) whenever the video is copied — asked for with
+(`maxHeight`, `qualityLevel` and `encoderQuality`) whenever the video is copied — asked for with
 `videoCodec: copy` or defaulted to by a merge that named none — requires a
 chosen default track to be in its explicit index list, rejects a subtitle
 selection for a non-`.mkv` output (subtitles ride only in Matroska — see
@@ -164,6 +165,7 @@ a consumer can surface what the host actually offers:
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `explicitVideoSelection` | bool | Supports explicit video mapping, names and selected-video Dolby Vision rewriting. Older engines omit this capability. |
+| `encoderQualityOptions` | object[] | Codec and encoder pairs that passed a short FFmpeg probe. Each item has `videoCodec`, `hardwareAcceleration`, `parameter`, `min`, `max`, `step` and `defaultValue`. Older engines omit this field. |
 | `vaapiAvailable` | bool | A VAAPI render node is visible in the container (the `/dev/dri` passthrough worked). |
 | `vaapiDevice` | string? | The render node that would be used (`VAAPI_DEVICE` if it exists, else the first discovered node). |
 | `renderDevices` | string[] | All `/dev/dri/renderD*` nodes visible. |

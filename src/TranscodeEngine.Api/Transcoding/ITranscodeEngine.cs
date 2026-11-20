@@ -8,24 +8,21 @@ public enum TranscodeVideoCodec
 }
 
 /// <summary>
-/// How much picture a re-encode is allowed to spend bits on. Encoder-independent by design: the engine owns
-/// the mapping onto each family's own rate control (<c>QualityLevels</c>), so the same level means the same
-/// picture whether the job lands on libx265 or on a hardware encoder. That is what makes the opportunistic
-/// hardware fallback honest — a job that silently moves to another encoder must not silently change quality
-/// with it.
+/// A legacy quality setting. The engine maps presets to each encoder's native rate control.
+/// The resulting picture and file size vary with the encoder and source.
 /// </summary>
 public enum TranscodeQualityLevel
 {
-    /// <summary>Visually near-transparent; roughly halves a UHD remux.</summary>
+    /// <summary>The preset that requests the most detail.</summary>
     Highest,
 
-    /// <summary>The default. Around a 3.5× reduction on a UHD remux.</summary>
+    /// <summary>The default preset.</summary>
     High,
 
-    /// <summary>Noticeably smaller, still comfortable on a large screen.</summary>
+    /// <summary>A stronger compression preset.</summary>
     Balanced,
 
-    /// <summary>Size first; compression artefacts become findable.</summary>
+    /// <summary>The preset that requests the strongest compression.</summary>
     Small,
 }
 
@@ -103,6 +100,7 @@ public sealed record ExtractionOutput(
 /// preserved) — <see cref="VideoCodec"/>, <see cref="HardwareAcceleration"/>, <see cref="QualityLevel"/> and
 /// <see cref="MaxHeight"/> are then irrelevant. <see cref="MaxHeight"/> downscales to that height
 /// (aspect kept, never upscales — the caller is expected to omit it when the source is already smaller).
+/// <see cref="EncoderQuality"/> is the optional native quality value for the explicitly selected encoder.
 /// <see cref="AudioStreamIndexes"/>/<see cref="SubtitleStreamIndexes"/> are absolute input stream indices
 /// to copy, in output order; <c>null</c> copies all of that type. <see cref="DefaultAudioStreamIndex"/>/
 /// <see cref="DefaultSubtitleStreamIndex"/> mark one mapped track as the container default (requires the
@@ -138,7 +136,8 @@ public sealed record TranscodeJobRequest(
     IReadOnlyList<string>? JoinPaths = null,
     string? ClientJobId = null,
     TranscodeEngine.Api.Bluray.BluraySelection? Bluray = null,
-    int? VideoStreamIndex = null)
+    int? VideoStreamIndex = null,
+    double? EncoderQuality = null)
 {
     /// <summary>Two video files played consecutively, in their declared order.</summary>
     public bool IsJoin => JoinPaths is { Count: > 0 };

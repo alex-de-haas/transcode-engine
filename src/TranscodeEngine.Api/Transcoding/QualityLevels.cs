@@ -2,7 +2,7 @@ namespace TranscodeEngine.Api.Transcoding;
 
 /// <summary>
 /// Maps a <see cref="TranscodeQualityLevel"/> onto each encoder family's own rate control. This table is the
-/// whole reason the contract talks about levels instead of CRF numbers: a CRF, a QP and a VideoToolbox
+/// reason the preset contract uses levels: a CRF, a QP and a VideoToolbox
 /// quality are three different scales, and a job that falls back from one encoder to another has to keep
 /// meaning the same thing.
 /// <para>
@@ -36,8 +36,44 @@ internal static class QualityLevels
     /// equal, so the default behaves the same on every host.</summary>
     internal const TranscodeQualityLevel Default = TranscodeQualityLevel.High;
 
-    /// <summary>CRF for <c>libx264</c>/<c>libx265</c>. Lower is better; the H.264 values sit two points
-    /// below their HEVC counterparts because x264 needs the extra quality for the same result.</summary>
+    internal static string? EncoderQualityError(
+        double? encoderQuality,
+        bool copiesOrExcludesVideo,
+        TranscodeVideoCodec codec,
+        TranscodeHardware hardware,
+        TranscodeQualityLevel? qualityLevel)
+    {
+        if (encoderQuality is not { } value) return null;
+        if (copiesOrExcludesVideo || hardware == TranscodeHardware.Auto)
+            return "encoderQuality requires a video encode with an explicitly selected encoder.";
+        if (qualityLevel is not null)
+            return "encoderQuality and qualityLevel are mutually exclusive.";
+        var option = EncoderOption(codec, hardware);
+        if (!double.IsFinite(value) || value < option.Min || value > option.Max)
+            return $"encoderQuality ({option.Parameter}) must be between {option.Min} and {option.Max}.";
+        if (option.Step == 1 && value != Math.Truncate(value))
+            return $"encoderQuality ({option.Parameter}) must be a whole number.";
+        if (option.Step == 0.01 && Math.Abs(value - Math.Round(value, 2)) > 1e-9)
+            return $"encoderQuality ({option.Parameter}) must have at most two decimal places.";
+        return null;
+    }
+
+    internal static EncoderQualityOption EncoderOption(TranscodeVideoCodec codec, TranscodeHardware hardware)
+    {
+        var videoCodec = codec == TranscodeVideoCodec.H264 ? "h264" : "hevc";
+        return hardware switch
+        {
+            TranscodeHardware.None => new(videoCodec, "none", "crf", 0, 51, 0.01, SoftwareCrf(Default, codec)),
+            // FFmpeg treats zero as an omitted explicit VAAPI QP.
+            TranscodeHardware.Vaapi => new(videoCodec, "vaapi", "qp", 1, 51, 1, HardwareQp(Default, codec)),
+            TranscodeHardware.Amf => new(videoCodec, "amf", "qp", 0, 51, 1, HardwareQp(Default, codec)),
+            TranscodeHardware.VideoToolbox => new(videoCodec, "videotoolbox", "q:v", 1, 100, 1, VideoToolboxQuality(Default, codec)),
+            _ => throw new ArgumentOutOfRangeException(nameof(hardware)),
+        };
+    }
+
+    /// <summary>CRF presets for <c>libx264</c> and <c>libx265</c>. Lower requests more detail.
+    /// The H.264 presets use CRFs two points below the HEVC presets.</summary>
     internal static int SoftwareCrf(TranscodeQualityLevel level, TranscodeVideoCodec codec) =>
         (level, codec) switch
         {
