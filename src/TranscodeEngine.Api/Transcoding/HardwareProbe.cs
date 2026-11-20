@@ -23,11 +23,31 @@ public sealed record HardwareStatus(
     ToolingStatus? Tools = null,
     bool VideoPartJoining = true,
     bool ExplicitVideoSelection = true,
-    bool IdempotentTranscodes = true);
+    bool IdempotentTranscodes = true,
+    IReadOnlyList<EncoderQualityOption>? EncoderQualityOptions = null);
+
+/// <summary>The native quality control for an available codec and explicit encoder.</summary>
+public sealed record EncoderQualityOption(
+    string VideoCodec,
+    string HardwareAcceleration,
+    string Parameter,
+    int Min,
+    int Max,
+    double Step,
+    int DefaultValue);
 
 /// <summary>Inspects the passed-through DRI devices to report VAAPI availability without spawning a process.</summary>
 public static class HardwareProbe
 {
+    internal static bool IsEncoderAvailable(HardwareStatus status, TranscodeHardware hardware) => hardware switch
+    {
+        TranscodeHardware.None => true,
+        TranscodeHardware.Vaapi => status.VaapiAvailable,
+        TranscodeHardware.VideoToolbox => status.VideoToolboxAvailable,
+        TranscodeHardware.Amf => status.AmfAvailable,
+        _ => false,
+    };
+
     public static HardwareStatus Detect(TranscodeEngineSettings settings)
     {
         var renderDevices = EnumerateRenderNodes();

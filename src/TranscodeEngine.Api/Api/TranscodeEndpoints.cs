@@ -92,6 +92,16 @@ public static class TranscodeEndpoints
                 qualityLevel = parsedLevel;
             }
 
+            if (request.EncoderQuality is not null && string.IsNullOrWhiteSpace(request.VideoCodec))
+            {
+                return Results.BadRequest(new { error = "encoderQuality requires an explicit videoCodec." });
+            }
+
+            if (QualityLevels.EncoderQualityError(request.EncoderQuality, copyVideo, codec, hardware, qualityLevel) is { } qualityError)
+            {
+                return Results.BadRequest(new { error = qualityError });
+            }
+
             if (request.VideoStreamIndex is < 0)
                 return Results.BadRequest(new { error = "videoStreamIndex must be non-negative." });
 
@@ -283,7 +293,8 @@ public static class TranscodeEndpoints
                 audioTargets,
                 DolbyVision: dolbyVision,
                 VideoStreamIndex: request.VideoStreamIndex,
-                ClientJobId: request.ClientJobId?.ToString("N"));
+                ClientJobId: request.ClientJobId?.ToString("N"),
+                EncoderQuality: request.EncoderQuality);
 
             // The engine refuses what only the probed input can tell — a Dolby Vision conversion of a source
             // that is not profile 7 — as an ArgumentException, which is the same 400 as every rule above.
@@ -539,6 +550,8 @@ public static class TranscodeEndpoints
             "maxHeight cannot be set on an extraction: it produces no video output.",
         { QualityLevel: { } level } when !string.IsNullOrWhiteSpace(level) =>
             "qualityLevel cannot be set on an extraction: it produces no video output.",
+        { EncoderQuality: not null } =>
+            "encoderQuality cannot be set on an extraction: it produces no video output.",
         // Nothing is decoded or encoded, so there is nothing to accelerate. 'auto' is accepted and inert
         // because it is what a client sends by default, and failing the ordinary call over a field that means
         // nothing here would be gratuitous.

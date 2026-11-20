@@ -1,6 +1,6 @@
 ---
 created: 2026-07-03
-updated: 2026-09-17
+updated: 2026-11-19
 summary: Encoder families, the host hardware probe and per-request encoder resolution across VAAPI, VideoToolbox and AMF.
 ---
 
@@ -14,13 +14,11 @@ render node (Linux, in docker), or a host-native ffmpeg with access to the platf
 frameworks (VideoToolbox on macOS, AMF on Windows). This doc covers the encoder
 families, the host probe (`Transcoding/HardwareProbe.cs`), the auto-detection and
 per-request resolution (`FfmpegTranscodeEngine.ResolveHardware`), and the software
-fallback that keeps a job from ever hard-failing on a missing accelerator.
+fallback for jobs using quality presets.
 
-The guiding rule: **hardware is opportunistic, software is guaranteed.** An explicit
-encoder the host cannot satisfy falls back to `libx264`/`libx265` with a warning, not
-a failure. What was *actually* selected is reported per job as `effectiveHardware`
-and logged (`Job …: encoding with hevc_vaapi (vaapi)`), so a consumer can confirm
-hardware is really in effect.
+Preset jobs can fall back to `libx264` or `libx265` with a warning. A job with
+`encoderQuality` requires the selected encoder and fails if it is unavailable.
+`effectiveHardware` and the job log report the encoder selected for a run.
 
 ## The encoders and how each is reached
 
@@ -53,11 +51,13 @@ correctness gate:
   crash startup or a request.
 
 Inside the Linux docker container `videoToolboxAvailable` and `amfAvailable` are
-always false; `vaapiAvailable` reflects whether the `/dev/dri` passthrough worked.
+always false. `vaapiAvailable` reflects whether the `/dev/dri` passthrough worked.
+`encoderQualityOptions` lists codec and encoder pairs that pass a brief FFmpeg
+encode with the native quality mode. Successful probes are cached for the process.
 
 ## Resolution and fallback (`ResolveHardware`)
 
-Each job's `hardwareAcceleration` (or the `HWACCEL` default when `auto`) is resolved
+For a preset job, `hardwareAcceleration` (or the `HWACCEL` default when `auto`) resolves
 against a single host probe:
 
 ```mermaid
@@ -78,7 +78,8 @@ flowchart TD
 - **An explicit choice** is honoured only if the host can satisfy it: `vaapi` needs a
   render device, `videotoolbox` needs native macOS, `amf` needs the native-Windows AMF
   runtime. If not, the engine logs a warning and returns software (`None`) — the job
-  still runs.
+  still runs. A job with `encoderQuality` checks its selected encoder before startup
+  and fails if it cannot be used.
 
 ## Encoder families and the encode chain
 
@@ -100,9 +101,9 @@ downscale never upscales.
 
 ## Rate control
 
-Every family carries rate control, expressed as the job's `qualityLevel` in that
-family's own dialect. This is what makes the opportunistic fallback below honest: a
-job that lands on another encoder than it expected keeps asking for the same picture.
+Each encoder uses its own rate control. The engine maps a preset to the encoder
+chosen for the job, or applies the explicit `encoderQuality` value to the
+selected encoder. See [Compression controls](../compression-controls/feature.md#native-encoder-quality).
 
 | Family | Arguments |
 | --- | --- |
@@ -156,7 +157,7 @@ to fix.
 
 So a job that would ask for Main 10 (`NeedsVaapiTenBit`: a VAAPI *re-encode* of a
 deeper-than-8-bit source to HEVC — never a remux, an 8-bit source, or H.264) first
-checks the capability, and falls back to software when the answer is no:
+checks the capability. Preset jobs fall back to software when the answer is no:
 
 ```text
 Job …: VAAPI is available but its HEVC encoder cannot do Main 10, and the source is
@@ -171,11 +172,9 @@ Anything else — a Main-only encoder, a wedged device, an ffmpeg that will not 
 probe that outruns its 20s timeout — reads as "no Main 10", which costs speed but never
 correctness.
 
-It runs at most once per process, lazily: a host that never submits a 10-bit HEVC job
-never spawns it, and one that does pays for it on the first such job only. This is the
-only probe that spawns a process, which is why it lives on the engine rather than in
-`HardwareProbe` — `GET /hardware` stays free of it and keeps reporting device presence,
-while the job's `effectiveHardware` reports `software` whenever this fallback fires.
+The Main 10 probe runs at most once per process, at the first VAAPI job that needs
+it. A job with `encoderQuality` fails when that probe finds Main 10 unavailable.
+The preset fallback reports `software` in `effectiveHardware`.
 
 ## Why hardware is opportunistic but honest
 

@@ -51,12 +51,15 @@ var app = builder.Build();
 app.MapGet("/healthz", () => Results.Ok(new { status = "ok" }));
 
 // Detected hardware accelerators, plus the external tools a Dolby Vision conversion runs on (a consumer can
-// surface what the host actually offers, and gate the conversion on the tools). The hardware part stays a
-// cheap filesystem look on every call; the tool versions come from spawning each tool once, so they are read
-// lazily and kept — they are a property of the image, not of the request.
+// surface what the host actually offers, and gate the conversion on the tools). Device presence is checked on
+// each request. The native quality modes and tool versions are probed lazily and reused.
 var tooling = new Lazy<ToolingStatus>(() => DolbyVisionTooling.Describe(settings), LazyThreadSafetyMode.ExecutionAndPublication);
-app.MapGet("/hardware", (TranscodeEngineSettings current) =>
-    Results.Ok(HardwareProbe.Detect(current) with { Tools = tooling.Value }));
+app.MapGet("/hardware", async (TranscodeEngineSettings current, FfmpegTranscodeEngine engine, CancellationToken ct) =>
+{
+    var hardware = HardwareProbe.Detect(current);
+    var options = await engine.GetEncoderQualityOptionsAsync(hardware, ct);
+    return Results.Ok(hardware with { Tools = tooling.Value, EncoderQualityOptions = options });
+});
 
 app.MapTranscodeEndpoints();
 

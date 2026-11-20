@@ -1,13 +1,13 @@
 ---
 created: 2026-08-06
-updated: 2026-09-04
-summary: A quality level every encoder family honours and per-track audio re-encoding, so a job can make files smaller.
+updated: 2026-11-19
+summary: Native encoder quality, legacy quality presets and per-track audio re-encoding.
 ---
 
 # Compression Controls
 
-The two knobs that let a job make a file **smaller** rather than merely different: a
-quality level that every encoder family honours, and per-track audio re-encoding.
+Jobs can use an encoder's native video quality control or a legacy quality preset.
+They can also re-encode selected audio tracks.
 
 Before these, a job could drop tracks and re-encode the picture, but the only rate
 control it applied was `-crf` on the software path. VAAPI, AMF and VideoToolbox ran
@@ -15,14 +15,12 @@ at whatever their driver defaulted to, so on a hardware host there was no way to
 for less; and audio was always `-c:a copy`, which on a real library file leaves the
 larger half untouched.
 
-## Quality level, not CRF
+## Quality presets
 
-`POST /jobs` takes `qualityLevel` — `highest`, `high`, `balanced` or `small` —
-defaulting to `high`. It is deliberately not a CRF: a CRF, a constant quantiser and
-VideoToolbox's quality scale are three different numbers, and the engine's hardware
-selection is opportunistic. A job that falls back from `hevc_amf` to `libx265`
-because the host has no AMD driver must keep asking for the same picture; a raw CRF
-forwarded to whichever encoder answered could not.
+`POST /jobs` accepts the legacy `qualityLevel` values `highest`, `high`, `balanced`
+and `small`. When the request omits both quality fields, the engine uses `high`.
+For preset jobs that fall back to a different encoder, the engine maps the requested
+level to the encoder it will run.
 
 `QualityLevels` owns the translation and `AddVideoEncode` emits it:
 
@@ -33,9 +31,8 @@ forwarded to whichever encoder answered could not.
 | VAAPI (`hevc_vaapi`) | `-rc_mode CQP -qp N` | 22 / 24 / 25 / 26 |
 | VideoToolbox | `-q:v N` | 70 / 62 / 55 / 48 |
 
-VideoToolbox counts the other way — higher is better — which is exactly why the
-contract does not expose the number. H.264 asks for a CRF two points lower than HEVC
-at the same level, since x264 needs the extra quality to match.
+VideoToolbox requests more detail as its value increases. H.264 presets use CRF
+values two points below the corresponding HEVC presets.
 
 A family that cannot honour a level **fails the job**. VideoToolbox's constant-quality
 mode does not exist on every host (notably Intel Macs); there ffmpeg cannot open the
@@ -76,6 +73,26 @@ column is interpolated. Neither has been measured on its own hardware.
 Caveat on the table itself: `vmaf_v0.6.1` is calibrated for 1080p SDR viewing, and
 the whole 2–32 Mbps range compresses into 80–92 points. It ranks encoders against
 each other reliably. It cannot say which level is visually good enough.
+
+## Native encoder quality
+
+`GET /hardware` lists `encoderQualityOptions` for the codec and encoder pairs that
+pass a short FFmpeg probe. Each option describes its parameter, bounds, numeric
+step and default. The defaults correspond to the legacy `high` preset.
+
+| Encoder | Parameter | Range | Step | More detail |
+| --- | --- | --- | --- | --- |
+| Software H.264 or HEVC | CRF | 0–51 | 0.01 | Lower |
+| VAAPI | QP | 1–51 | 1 | Lower |
+| AMD AMF | QP | 0–51 | 1 | Lower |
+| VideoToolbox | `q:v` | 1–100 | 1 | Higher |
+
+`POST /jobs` takes `encoderQuality` with an explicit `videoCodec` and
+`hardwareAcceleration`. The value is mutually exclusive with `qualityLevel` and
+cannot be used with copying, extraction or the `auto` encoder choice. The engine
+passes the value to the selected encoder and retains it on durable submissions.
+If the encoder or a required profile is unavailable, the job fails with an error.
+Source material and encoder settings determine the resulting file size.
 
 ## Per-track audio re-encoding
 
@@ -165,6 +182,11 @@ is audio and 54.1 GB is video. See [Per-track audio re-encoding](#per-track-audi
 
 - The level → argument mapping is pinned per family, including VideoToolbox's
   inverted scale and H.264's lower CRF; an omitted level must resolve to the default.
+- The endpoint validates each native quality range and step and rejects incompatible
+  job modes. FFmpeg arguments carry the requested value for each encoder. A durable
+  replay rejects a changed value under the same client job ID.
+- Explicit values stay on the selected encoder. An unavailable encoder fails the
+  job, and HEVC hardware arguments retain Main 10 when the input requires it.
 - A copied video carries no rate control.
 - With no audio targets the blanket `-c:a copy` survives; with one target, that track
   re-encodes and every other mapped track is still copied.

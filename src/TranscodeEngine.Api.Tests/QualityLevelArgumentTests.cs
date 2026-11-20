@@ -27,6 +27,21 @@ public sealed class QualityLevelArgumentTests
         return index >= 0 && index + 1 < args.Count ? args[index + 1] : null;
     }
 
+    [Fact]
+    public async Task NativeQualityOptions_RequireAnEncoderThatCanStart()
+    {
+        using var engine = new FfmpegTranscodeEngine(
+            new TranscodeEngineSettings
+            {
+                AppDataDir = Path.GetTempPath(),
+                MediaRoots = new Dictionary<string, string>(),
+                FfmpegPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")),
+            },
+            NullLogger<FfmpegTranscodeEngine>.Instance);
+        var noHardware = new HardwareStatus(false, null, [], false, false, DateTimeOffset.UtcNow);
+        Assert.Empty(await engine.GetEncoderQualityOptionsAsync(noHardware, default));
+    }
+
     [Theory]
     [InlineData(TranscodeQualityLevel.Highest, "18")]
     [InlineData(TranscodeQualityLevel.High, "20")]
@@ -38,6 +53,70 @@ public sealed class QualityLevelArgumentTests
 
         Assert.Equal("libx265", ValueAfter(args, "-c:v"));
         Assert.Equal(expected, ValueAfter(args, "-crf"));
+    }
+
+    [Theory]
+    [InlineData(TranscodeVideoCodec.Hevc, 0, "0", "libx265")]
+    [InlineData(TranscodeVideoCodec.H264, 13.5, "13.5", "libx264")]
+    [InlineData(TranscodeVideoCodec.Hevc, 51, "51", "libx265")]
+    public void Software_UsesExplicitCrf(TranscodeVideoCodec codec, double crf, string expected, string encoder)
+    {
+        using var engine = Engine();
+        var job = new TranscodeJob(
+            "job-1",
+            new TranscodeJobRequest("/in/movie.mkv", "/out/movie.mkv", codec,
+                TranscodeHardware.None, QualityLevel: null, EncoderQuality: crf),
+            durationSeconds: null);
+
+        var args = engine.BuildArguments(job, TranscodeHardware.None);
+
+        Assert.Equal(encoder, ValueAfter(args, "-c:v"));
+        Assert.Equal(expected, ValueAfter(args, "-crf"));
+        Assert.DoesNotContain("-vf", args);
+    }
+
+    [Theory]
+    [InlineData(TranscodeHardware.Vaapi, "-qp", "hevc_vaapi", "p010le", null)]
+    [InlineData(TranscodeHardware.Amf, "-qp_i", "hevc_amf", "p010le", "p010le")]
+    [InlineData(TranscodeHardware.VideoToolbox, "-q:v", "hevc_videotoolbox", "p010le", "p010le")]
+    public void Hardware_UsesExactNativeValueAndPreservesHevcMain10(
+        TranscodeHardware hardware, string flag, string encoder, string sourcePixelFormat, string? expectedPixelFormat)
+    {
+        using var engine = Engine();
+        var job = new TranscodeJob(
+            "job-1",
+            new TranscodeJobRequest("/in/movie.mkv", "/out/movie.mkv", TranscodeVideoCodec.Hevc,
+                hardware, QualityLevel: null, EncoderQuality: 31),
+            durationSeconds: null, sourcePixelFormat: sourcePixelFormat);
+
+        var args = engine.BuildArguments(job, hardware);
+
+        Assert.Equal(encoder, ValueAfter(args, "-c:v"));
+        Assert.Equal("31", ValueAfter(args, flag));
+        Assert.Equal("main10", ValueAfter(args, "-profile:v"));
+        Assert.Equal(expectedPixelFormat, ValueAfter(args, "-pix_fmt"));
+        if (hardware == TranscodeHardware.Vaapi)
+            Assert.Equal("format=p010,hwupload", ValueAfter(args, "-vf"));
+        if (hardware == TranscodeHardware.Amf)
+            Assert.Equal("31", ValueAfter(args, "-qp_p"));
+        if (hardware == TranscodeHardware.VideoToolbox)
+            Assert.Equal("0", ValueAfter(args, "-allow_sw"));
+    }
+
+    [Fact]
+    public void AmfH264_AppliesTheRequestedQpToBFrames()
+    {
+        using var engine = Engine();
+        var job = new TranscodeJob(
+            "job-1",
+            new TranscodeJobRequest("/in/movie.mkv", "/out/movie.mkv", TranscodeVideoCodec.H264,
+                TranscodeHardware.Amf, QualityLevel: null, EncoderQuality: 19),
+            durationSeconds: null);
+
+        var args = engine.BuildArguments(job, TranscodeHardware.Amf);
+
+        Assert.Equal("h264_amf", ValueAfter(args, "-c:v"));
+        Assert.Equal("19", ValueAfter(args, "-qp_b"));
     }
 
     [Theory]

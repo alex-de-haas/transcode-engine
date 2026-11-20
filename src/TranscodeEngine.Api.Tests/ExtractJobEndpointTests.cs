@@ -192,6 +192,20 @@ public sealed class ExtractJobEndpointTests
     }
 
     [Fact]
+    public async Task Post_EncoderQualityOnAnExtraction_ReturnsBadRequest()
+    {
+        var (response, _) = await PostAsync(new
+        {
+            inputMountLabel = "media",
+            inputPath = "in.mkv",
+            encoderQuality = 0,
+            outputs = new[] { new { path = "in.rus.mka", streamIndex = 1 } },
+        });
+
+        Assert.Contains("encoderQuality", await ErrorOf(response));
+    }
+
+    [Fact]
     public async Task Post_MaxHeightOnAnExtraction_ReturnsBadRequest()
     {
         var (response, _) = await PostAsync(new

@@ -7,8 +7,8 @@ namespace TranscodeEngine.Api.Api;
 /// <see cref="InputMountLabel"/> when omitted. <see cref="VideoCodec"/> (<c>h264</c>/<c>hevc</c>),
 /// <see cref="HardwareAcceleration"/> (<c>auto</c>/<c>vaapi</c>/<c>videotoolbox</c>/<c>amf</c>/<c>none</c>)
 /// and <see cref="QualityLevel"/> (<c>highest</c>/<c>high</c>/<c>balanced</c>/<c>small</c>) fall back to
-/// engine defaults when omitted. A level is deliberately not a CRF: the engine maps it onto whichever encoder
-/// the host can reach, so the same level means the same picture on all of them.
+/// engine defaults when omitted. The engine maps a level onto its selected encoder. A request may instead
+/// set <see cref="EncoderQuality"/> for an explicit encoder using the options returned by <c>GET /hardware</c>.
 /// <see cref="VideoCodec"/> also accepts <c>copy</c> to remux the video untouched — <see cref="MaxHeight"/>
 /// and <see cref="QualityLevel"/> are then rejected as contradictory. <see cref="MaxHeight"/> downscales to
 /// that height (omit to keep the source resolution).
@@ -49,7 +49,8 @@ public sealed record CreateJobRequest(
     IReadOnlyList<OutputRequest>? Outputs = null,
     string? DolbyVision = null,
     int? VideoStreamIndex = null,
-    Guid? ClientJobId = null);
+    Guid? ClientJobId = null,
+    double? EncoderQuality = null);
 
 /// <summary>
 /// One stream of the input written out as its own file — how an extraction is expressed. The path resolves

@@ -120,6 +120,9 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
 
     public async Task<JobDescriptor> CreateAsync(TranscodeJobRequest request, CancellationToken cancellationToken)
     {
+        if (QualityLevels.EncoderQualityError(request.EncoderQuality, request.CopyVideo || request.IsExtraction || request.IsJoin || request.Bluray is not null,
+                request.VideoCodec, request.HardwareAcceleration, request.QualityLevel) is { } qualityError)
+            throw new ArgumentException(qualityError);
         if (request.ClientJobId is { } clientId && (!Guid.TryParseExact(clientId, "N", out var parsedId) || parsedId == Guid.Empty))
             throw new ArgumentException("clientJobId must be a nonempty UUID in N format.");
         if (request.ClientJobId is not null)
@@ -377,15 +380,25 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
             return;
         }
 
-        var hardware = ResolveHardware(job.Request.HardwareAcceleration);
+        var request = job.Request;
+        var explicitQuality = request.EncoderQuality is not null;
+        var hardware = explicitQuality ? request.HardwareAcceleration : ResolveHardware(request.HardwareAcceleration);
+        if (explicitQuality && !HardwareProbe.IsEncoderAvailable(HardwareProbe.Detect(_settings), hardware))
+        {
+            FailEncoderSelection(job, $"The selected {HardwareLabel(hardware)} encoder is unavailable.");
+            return;
+        }
 
-        // A 10-bit VAAPI encode is the one hardware choice the render-node check above cannot vouch for:
-        // the node exists, but the driver's HEVC encoder may be Main-only (Intel before Kaby Lake). Rather
-        // than let ffmpeg hard-fail on encoder init — or silently truncate to 8 bit, which was the bug this
-        // path exists to fix — check the capability once and degrade to software, keeping the promise that
-        // hardware the host cannot satisfy falls back with a warning.
+        // A VAAPI render node may expose a Main-only HEVC encoder. Check Main 10 before encoding a
+        // 10-bit source. Preset jobs can switch to software to keep the input depth.
         if (NeedsVaapiTenBit(job.Request, hardware, job.SourcePixelFormat) && !_vaapiTenBitSupported.Value)
         {
+            if (explicitQuality)
+            {
+                FailEncoderSelection(job, "The selected VAAPI encoder does not support HEVC Main 10 for this source.");
+                return;
+            }
+
             _logger.LogWarning(
                 "Job {JobId}: VAAPI is available but its HEVC encoder cannot do Main 10, and the source is " +
                 "{PixelFormat}; falling back to software so the encode keeps its bit depth.",
@@ -1141,6 +1154,9 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
         var height = request.MaxHeight;
         var level = request.QualityLevel ?? QualityLevels.Default;
         var codec = request.VideoCodec;
+        var explicitValue = request.EncoderQuality?.ToString(CultureInfo.InvariantCulture);
+        var explicitMain10 = explicitValue is not null && codec == TranscodeVideoCodec.Hevc &&
+            SourceBitDepth(sourcePixelFormat) > 8;
         switch (hardware)
         {
             case TranscodeHardware.Vaapi:
@@ -1158,7 +1174,7 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
                 args.Add("-rc_mode");
                 args.Add("CQP");
                 args.Add("-qp");
-                args.Add(Number(QualityLevels.HardwareQp(level, codec)));
+                args.Add(explicitValue ?? Number(QualityLevels.HardwareQp(level, codec)));
                 if (tenBit)
                 {
                     // vaapi_encode derives the profile from the surface format, but naming it keeps a driver
@@ -1177,7 +1193,11 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
                 // that message, which is the intended outcome: silently encoding at the driver default would
                 // hand back a file the requested level says nothing about.
                 args.Add("-q:v");
-                args.Add(Number(QualityLevels.VideoToolboxQuality(level, codec)));
+                args.Add(explicitValue ?? Number(QualityLevels.VideoToolboxQuality(level, codec)));
+                if (explicitValue is not null)
+                    args.AddRange(["-allow_sw", "0"]);
+                if (explicitMain10)
+                    args.AddRange(["-pix_fmt", "p010le", "-profile:v", "main10"]);
                 break;
             case TranscodeHardware.Amf:
                 // The decoder already hands back system-memory frames (see the -hwaccel setup), so no
@@ -1186,22 +1206,26 @@ public sealed partial class FfmpegTranscodeEngine : ITranscodeEngine, IHostedSer
                 args.Add("-c:v");
                 args.Add(AmfEncoder(codec));
                 // CQP is the only quality-style mode AMF offers here: qvbr, hqvbr, vbr_peak+VBAQ and CQP
-                // with pre-analysis all fail encoder init with AMF_NOT_SUPPORTED. I and P frames carry the
-                // same quantiser; -qp_b is deliberately absent, since hevc_amf does not expose it.
-                var qp = Number(QualityLevels.HardwareQp(level, codec));
+                // with pre-analysis all fail encoder init with AMF_NOT_SUPPORTED. H.264 exposes a separate
+                // B-frame parameter, so an explicit value applies there as well as to I and P frames.
+                var qp = explicitValue ?? Number(QualityLevels.HardwareQp(level, codec));
                 args.Add("-rc");
                 args.Add("cqp");
                 args.Add("-qp_i");
                 args.Add(qp);
                 args.Add("-qp_p");
                 args.Add(qp);
+                if (explicitValue is not null && codec == TranscodeVideoCodec.H264)
+                    args.AddRange(["-qp_b", qp]);
+                if (explicitMain10)
+                    args.AddRange(["-pix_fmt", "p010le", "-profile:v", "main10"]);
                 break;
             default:
                 AddCpuScale(args, height);
                 args.Add("-c:v");
                 args.Add(SoftwareEncoder(codec));
                 args.Add("-crf");
-                args.Add(Number(QualityLevels.SoftwareCrf(level, codec)));
+                args.Add(explicitValue ?? Number(QualityLevels.SoftwareCrf(level, codec)));
                 break;
         }
     }
