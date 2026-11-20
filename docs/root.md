@@ -84,8 +84,8 @@ flowchart TB
 
 Engine (`engine` service):
 
-- .NET 10 ASP.NET Core Minimal API, published as a framework-dependent app on the
-  `aspnet:10.0` runtime image. JSON via `System.Text.Json` (web defaults).
+- .NET 11 ASP.NET Core Minimal API, published as a framework-dependent app on the
+  `aspnet:11.0` runtime image. JSON via `System.Text.Json` (web defaults).
 - [ffmpeg](https://ffmpeg.org/) / ffprobe, spawned as a child process per job. The
   engine parses ffmpeg's `-progress` key/value stream into live snapshots and reads
   input duration from ffprobe.
@@ -100,8 +100,8 @@ Engine (`engine` service):
 Runtime and delivery:
 
 - Hosty runtime app manifest (`manifest.json`, `schemaVersion: "app.0.1"`) with
-  **three** runtime profiles: `docker` (default, software encoding, starts
-  everywhere), `docker-vaapi` (adds the `/dev/dri` device for Linux hardware
+  **three** runtime profiles: `docker` (default, software encoding without a render
+  device), `docker-vaapi` (adds the `/dev/dri` device for Linux hardware
   encoding), and `local` (a native `localCommand` run for host-native encoders —
   VideoToolbox on macOS, AMF on Windows).
 - A two-stage Dockerfile: a .NET SDK build stage, and an `aspnet` runtime stage that

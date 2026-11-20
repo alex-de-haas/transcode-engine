@@ -30,12 +30,12 @@ container — isolates two things:
 
 ## Runtimes
 
-Ships four runtime profiles: a default **`docker`** (software encoding, runs on any
-host), an opt-in **`docker-vaapi`** that adds `/dev/dri` device passthrough for Linux
+Ships four runtime profiles: a default **`docker`** (software encoding without a
+render device), an opt-in **`docker-vaapi`** that adds `/dev/dri` device passthrough for Linux
 hosts with a render node, a native **`local`** command for host-native encoders such
 as VideoToolbox on macOS and AMF on Windows, and a native **`dev`** profile that runs
-editable source with `dotnet watch`. The `dev` profile requires the .NET 10 SDK and
-host-installed ffmpeg/ffprobe; source edits hot-reload or restart the engine,
+editable source with `dotnet watch`. Both native profiles require the .NET 11 SDK and
+host-installed ffmpeg/ffprobe. In `dev`, source edits hot-reload or restart the engine,
 interrupting active transcodes when a restart is needed.
 
 ## Using it

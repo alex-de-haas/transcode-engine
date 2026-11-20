@@ -105,17 +105,17 @@ whether `dovi_tool` and MKVToolNix are present for the Dolby Vision conversion.
 | **VAAPI** (Intel / AMD) | `docker-vaapi` | A passed-through `/dev/dri` render node (manifest `devices`). Opt-in profile — the host must expose a render node, since Docker hard-fails container creation when `--device /dev/dri` is missing. |
 | **VideoToolbox** (Apple) | `local` (native) | The engine runs natively on the macOS host via the `localCommand` runtime; the host's `ffmpeg` reaches VideoToolbox directly. |
 | **AMF** (AMD, Windows) | `local` (native) | The engine runs natively on the Windows host via the `localCommand` runtime; the host's `ffmpeg` hardware-decodes on the AMD VCN via D3D11VA and hardware-encodes with `*_amf`. The path for AMD on Windows, where VAAPI does not exist. |
-| **Software** (libx264 / libx265) | `docker` (default) | Fallback when no hardware is available. Starts on any host, including macOS Docker Desktop. |
+| **Software** (libx264 / libx265) | `docker` (default) | Fallback without a render device, including macOS Docker Desktop on supported hardware. |
 
 **Why VAAPI is an opt-in profile.** A docker `--device /dev/dri` is a hard requirement: if the host has no
 render node, the daemon refuses to create the container with
 `error gathering device information while adding custom device "/dev/dri": no such file or directory` — the
 container never starts, so the engine's own software fallback never gets a chance to run. The default
-`docker` profile therefore carries **no** device and always starts; enable hardware only where the node
+`docker` profile therefore carries **no** device. Enable hardware only where the node
 actually exists:
 
 ```bash
-# Default: software encoding, starts everywhere (incl. macOS Docker Desktop, which has no /dev/dri).
+# Default: software encoding without a render device, including macOS Docker Desktop.
 hosty apps install . --runtime docker
 
 # Hardware VAAPI: only on a Linux host that exposes a render node (verify `ls -la /dev/dri` first).
@@ -128,7 +128,7 @@ runtime on a Mac. To use it, run the engine through the **`local`** runtime prof
 `dotnet run` on the host so `ffmpeg` is the host's own (e.g. Homebrew `ffmpeg`, which ships VideoToolbox):
 
 ```bash
-brew install ffmpeg dotnet            # host needs ffmpeg (with VideoToolbox) + the .NET SDK
+brew install ffmpeg dotnet            # host needs ffmpeg (with VideoToolbox) and the .NET 11 SDK
 hosty apps install . --runtime local
 hosty apps start com.haas.transcode-engine
 ```
@@ -144,7 +144,7 @@ served by the host's `ffmpeg`. Run the engine through the **`local`** runtime so
 
 ```powershell
 # Host needs: AMD Adrenalin driver (ships amfrt64.dll), an ffmpeg build with AMF + d3d11va
-# (e.g. gyan.dev / BtbN) on PATH, and the .NET SDK.
+# (e.g. gyan.dev / BtbN) on PATH, and the .NET 11 SDK.
 hosty apps install . --runtime local
 hosty apps start com.haas.transcode-engine
 ```
@@ -165,7 +165,7 @@ hosty apps source-override com.haas.transcode-engine --path .
 hosty apps start com.haas.transcode-engine
 ```
 
-The Core account needs the .NET 10 SDK, ffmpeg and ffprobe on PATH. This profile uses the
+The Core account needs the .NET 11 SDK, ffmpeg and ffprobe on PATH. This profile uses the
 host's native encoders like `local`; it does not require a development Docker image. Source
 edits hot-reload or restart the engine automatically. Restarts interrupt active jobs and clear
 the in-memory job list, so use disposable test media. See the

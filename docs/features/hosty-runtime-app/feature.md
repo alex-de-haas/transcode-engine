@@ -1,6 +1,6 @@
 ---
 created: 2026-07-03
-updated: 2026-11-19
+updated: 2026-11-20
 summary: The Hosty manifest, runtime profiles, devices, settings, app data and telemetry.
 ---
 
@@ -23,7 +23,7 @@ A single `engine` service with **four** runtime profiles (`defaultRuntime: docke
 | Manifest section | Value / purpose |
 | --- | --- |
 | `runtimeProfiles` | `docker` (default), `docker-vaapi`, `local`, `dev` (see below). |
-| `services[].engine.runtimes.docker` | `ghcr.io/alex-de-haas/transcode-engine:0.16.0`, `control` → container port `8080` (http). **No device** — always starts. |
+| `services[].engine.runtimes.docker` | `ghcr.io/alex-de-haas/transcode-engine:0.17.0`, `control` → container port `8080` (http). Software encoding requires no render device. |
 | `…runtimes.docker-vaapi` | Same image + port, plus `devices: ["/dev/dri"]` for hardware VAAPI. |
 | `…runtimes.local` | `localCommand`: `dotnet run --project src/TranscodeEngine.Api --configuration Release` in the repo root, `control` port `8080`. Runs natively on the host for VideoToolbox / AMF. |
 | `…runtimes.dev` | Editable native source, `development: true`, restore followed by noninteractive `dotnet watch`; Core assigns the control port. |
@@ -39,16 +39,14 @@ A single `engine` service with **four** runtime profiles (`defaultRuntime: docke
 The four profiles exist because the reachable encoder depends on where and how the
 engine runs (see [Hardware acceleration](../hardware-acceleration/feature.md)):
 
-- **`docker` (default)** — the published image, software encoding, **no** device. It
-  starts on any host, including macOS Docker Desktop (which has no `/dev/dri`). This
-  is the safe default: it never fails to start.
+- **`docker` (default)** — the published image, with software encoding and no render
+  device required, suitable for macOS Docker Desktop.
 - **`docker-vaapi`** — the same image plus a `/dev/dri` device passthrough for
   hardware VAAPI on a Linux host that exposes a render node. It is a **separate,
   opt-in** profile precisely because a Docker `--device /dev/dri` is a hard
   requirement: if the host has no render node the daemon refuses to create the
   container (`no such file or directory`), so the engine's own software fallback would
-  never get to run. Keeping the device off the default profile is what preserves
-  "always starts".
+  never get to run.
 - **`local`** — a `localCommand` profile that runs `dotnet run` on the host instead of
   in a container, so `ffmpeg` is the host's own. Native execution reaches
   VideoToolbox (macOS) or AMF (Windows), since Docker there runs a Linux VM with no
@@ -62,7 +60,7 @@ port and app data, and supervises the process tree. Polling detects edits in sel
 folders; rude edits trigger a restart without an interactive prompt. The existing `local`
 profile remains reviewed and has no source watcher. Docker remains the default profile.
 
-The Core process account needs the .NET 10 SDK, `ffmpeg` and `ffprobe` on PATH. Dolby Vision
+The Core process account needs the .NET 11 SDK, `ffmpeg` and `ffprobe` on PATH. Dolby Vision
 conversion additionally requires `dovi_tool`, `mkvmerge` and `mkvextract`, as in the `local`
 profile. Native encoder availability is unchanged: VideoToolbox on macOS, AMF with a compatible
 Windows driver/ffmpeg build, or VAAPI on a Linux host with a render device.
